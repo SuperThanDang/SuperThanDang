@@ -1,11 +1,3 @@
-## Hi there 👋
-
-Tôi là một lập trình viên đang trên hành trình khám phá thế giới công nghệ, game và phát triển phần mềm.
-
-- 🔭 Tôi đang làm việc với: Các dự án mã nguồn mở và ứng dụng web tương tác.
-- 🌱 Tôi đang học: C++, Python, Three.js và phát triển ứng dụng WebGL.
-- 👯 Tôi rất vui được hợp tác trong các dự án phát triển game và công cụ phần mềm.
-- 💬 Hỏi tôi về: Lập trình cơ bản, tối ưu code và các tựa game bắn súng góc nhìn thứ nhất (FPS).
-- 📫 Cách liên hệ với tôi: [akathothay@gmail.com]
-- 😄 Đại từ: Anh / Bạn
-- ⚡ Thích khám phá: Tối ưu hóa hệ thống, mod game và công nghệ web hiện đại.
+Vietnamese: hi toi la mot laptrinhvien , toi co the 1 can 5 bang claude hoac chat gpt=)) neu co gop y cho toi hoac hop tac hay lien he qua gmail : akathothay@gmail.com
+English : Hi, I am a developer. I can 1v1 Claude or ChatGPT =)). If you have any feedback or want to collaborate, feel free to contact me via Gmail: akathothay@gmail.com
+TKS EVERYONE
