@@ -1,0 +1,2189 @@
+// Gemini Desk 14 - ALL-IN-ONE SOURCE.
+// Paste this entire file into main.cpp in a Code::Blocks C++ project.
+// Windows 10/11, MinGW, C++11 or newer. Save as UTF-8, then Rebuild and F9.
+// Uses only Windows and standard C++ headers; no third-party files/linker libraries.
+// X hides to the system tray; Alt+Q exits. History stays in LOCALAPPDATA/GeminiDesktop.
+// Capture exclusion depends on Windows and the sharing application; verify on your PC.
+// Ctrl+V / drag a file into the composer: preview ONE image before sending.
+// Markdown is formatted after streaming; each fenced code block has its own Copy action.
+// Edit & resend creates a branch and keeps the original conversation.
+// Images persist under LOCALAPPDATA/GeminiDesktop/attachments for history and editing.
+// Desk 14: bottom/unread button; retry and answer versions; .gdesk backup + merge restore.
+// Backups include referenced images and drafts, but do not read Credential Manager/API key settings.
+// Restore adds chats without replacing current history. Earlier-turn retries open a new branch.
+#ifndef UNICODE
+#define UNICODE
+#endif
+#ifndef _UNICODE
+#define _UNICODE
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#include <windows.h>
+#include <winhttp.h>
+#include <wincred.h>
+#include <dwmapi.h>
+#include <shellapi.h>
+#include <richedit.h>
+#include <commdlg.h>
+#include <initguid.h>
+#include <wincodec.h>
+#include <functional>
+#include <process.h>
+#include <cstdio>
+#include <algorithm>
+#include <cstdint>
+#include <memory>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <map>
+#include <set>
+#include <cstring>
+#include <cstdlib>
+#include <utility>
+
+using std::string;
+using std::wstring;
+
+// Dynamic Windows APIs: no additional linker libraries.
+#define GDI_APIS(X) X(CreateCompatibleDC) X(CreateCompatibleBitmap) X(SelectObject) X(SetStretchBltMode) X(SetBrushOrgEx) X(StretchBlt) X(GetDIBits) X(DeleteObject) X(DeleteDC) X(CreateFontW) X(CreateSolidBrush) X(SetTextColor) X(SetBkColor) X(SetBkMode) X(GetDeviceCaps) X(CreatePen) X(RoundRect) X(StretchDIBits) X(BitBlt)
+#define HTTP_APIS(X) X(WinHttpOpen) X(WinHttpCloseHandle) X(WinHttpSetTimeouts) X(WinHttpConnect) X(WinHttpOpenRequest) X(WinHttpSetOption) X(WinHttpSendRequest) X(WinHttpReceiveResponse) X(WinHttpQueryHeaders) X(WinHttpReadData)
+#define CRED_APIS(X) X(CredWriteW) X(CredReadW) X(CredFree) X(CredDeleteW)
+#define DWM_APIS(X) X(DwmFlush)
+#define SHELL_APIS(X) X(Shell_NotifyIconW) X(ShellExecuteW) X(DragAcceptFiles) X(DragQueryFileW) X(DragFinish)
+#define COM_APIS(X) X(CoInitializeEx) X(CoUninitialize) X(CoCreateInstance) X(CreateStreamOnHGlobal)
+#define DIALOG_APIS(X) X(GetOpenFileNameW) X(GetSaveFileNameW) X(CommDlgExtendedError)
+#define DECLARE_API(f) decltype(&::f) p##f=nullptr;
+GDI_APIS(DECLARE_API) HTTP_APIS(DECLARE_API)
+CRED_APIS(DECLARE_API) DWM_APIS(DECLARE_API) SHELL_APIS(DECLARE_API)
+COM_APIS(DECLARE_API) DIALOG_APIS(DECLARE_API)
+#undef DECLARE_API
+
+template<class F> void bindFunction(HMODULE module,F& target,const char* name){
+    FARPROC p=GetProcAddress(module,name);
+    if(!p)throw std::runtime_error(string("Missing Windows API: ")+name);
+    static_assert(sizeof(p)==sizeof(target),"Function pointer size mismatch");
+    memcpy(&target,&p,sizeof(p));
+}
+void initLibraries(){
+    HMODULE m=nullptr;
+#define LOAD_API(f) bindFunction(m,p##f,#f);
+    m=LoadLibraryW(L"gdi32.dll");
+    if(!m)throw std::runtime_error("Cannot load gdi32.dll");
+    GDI_APIS(LOAD_API)
+    m=LoadLibraryW(L"winhttp.dll");
+    if(!m)throw std::runtime_error("Cannot load winhttp.dll");
+    HTTP_APIS(LOAD_API)
+    m=LoadLibraryW(L"advapi32.dll");
+    if(!m)throw std::runtime_error("Cannot load advapi32.dll");
+    CRED_APIS(LOAD_API)
+    m=LoadLibraryW(L"dwmapi.dll");
+    if(!m)throw std::runtime_error("Cannot load dwmapi.dll");
+    DWM_APIS(LOAD_API)
+    m=LoadLibraryW(L"shell32.dll");
+    if(!m)throw std::runtime_error("Cannot load shell32.dll");
+    SHELL_APIS(LOAD_API)
+    m=LoadLibraryW(L"ole32.dll");if(!m)throw std::runtime_error("Cannot load ole32.dll");COM_APIS(LOAD_API)
+    m=LoadLibraryW(L"comdlg32.dll");if(!m)throw std::runtime_error("Cannot load comdlg32.dll");DIALOG_APIS(LOAD_API)
+    if(!LoadLibraryW(L"Msftedit.dll"))throw std::runtime_error("Cannot load Windows Rich Edit");
+#undef LOAD_API
+}
+#define CreateCompatibleDC pCreateCompatibleDC
+#define CreateCompatibleBitmap pCreateCompatibleBitmap
+#define SelectObject pSelectObject
+#define SetStretchBltMode pSetStretchBltMode
+#define SetBrushOrgEx pSetBrushOrgEx
+#define StretchBlt pStretchBlt
+#define GetDIBits pGetDIBits
+#define DeleteObject pDeleteObject
+#define DeleteDC pDeleteDC
+#define CreateFontW pCreateFontW
+#define CreateSolidBrush pCreateSolidBrush
+#define SetTextColor pSetTextColor
+#define SetBkColor pSetBkColor
+#define SetBkMode pSetBkMode
+#define GetDeviceCaps pGetDeviceCaps
+#define CreatePen pCreatePen
+#define RoundRect pRoundRect
+#define StretchDIBits pStretchDIBits
+#define BitBlt pBitBlt
+#define WinHttpOpen pWinHttpOpen
+#define WinHttpCloseHandle pWinHttpCloseHandle
+#define WinHttpSetTimeouts pWinHttpSetTimeouts
+#define WinHttpConnect pWinHttpConnect
+#define WinHttpOpenRequest pWinHttpOpenRequest
+#define WinHttpSetOption pWinHttpSetOption
+#define WinHttpSendRequest pWinHttpSendRequest
+#define WinHttpReceiveResponse pWinHttpReceiveResponse
+#define WinHttpQueryHeaders pWinHttpQueryHeaders
+#define WinHttpReadData pWinHttpReadData
+#define CredWriteW pCredWriteW
+#define CredReadW pCredReadW
+#define CredFree pCredFree
+#define CredDeleteW pCredDeleteW
+#define DwmFlush pDwmFlush
+#define Shell_NotifyIconW pShell_NotifyIconW
+#define ShellExecuteW pShellExecuteW
+#define DragAcceptFiles pDragAcceptFiles
+#define DragQueryFileW pDragQueryFileW
+#define DragFinish pDragFinish
+#define CoInitializeEx pCoInitializeEx
+#define CoUninitialize pCoUninitialize
+#define CoCreateInstance pCoCreateInstance
+#define CreateStreamOnHGlobal pCreateStreamOnHGlobal
+#define GetOpenFileNameW pGetOpenFileNameW
+#define GetSaveFileNameW pGetSaveFileNameW
+#define CommDlgExtendedError pCommDlgExtendedError
+
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
+
+
+// JSON reader with Unicode escape and surrogate-pair support.
+struct json {
+    enum Type { Null, Object, Array, String, Number, Boolean } type=Null;
+    std::map<string,json> object;
+    std::vector<json> array;
+    string text;
+    bool flag=false;
+    bool contains(const string& k)const{return type==Object && object.count(k)!=0;}
+    const json& at(const string& k)const {
+        if(!contains(k))throw std::runtime_error("JSON missing field: "+k);
+        return object.at(k);
+    }
+    const json& at(int i)const {
+        if(type!=Array || i<0 || (size_t)i>=array.size())throw std::runtime_error("Invalid JSON array");
+        return array[(size_t)i];
+    }
+    bool empty()const{
+        if(type==Array)return array.empty();
+        if(type==Object)return object.empty();
+        if(type==String)return text.empty();
+        return type==Null;
+    }
+    string str()const {
+        if(type!=String)throw std::runtime_error("Expected JSON string");
+        return text;
+    }
+    string value(const string& k,const string& fallback)const{return contains(k) && at(k).type==String?at(k).text:fallback;}
+    bool value(const string& k,bool fallback)const {
+        if(!contains(k)||at(k).type!=Boolean)return fallback;
+        return at(k).flag;
+    }
+    bool operator==(const char* s)const{return type==String && text==s;}
+    std::vector<json>::const_iterator begin()const {
+        if(type!=Array)throw std::runtime_error("Expected JSON array");
+        return array.begin();
+    }
+    std::vector<json>::const_iterator end()const{return array.end();}
+    static json parse(const string& s);
+};
+struct JsonReader {
+    const string& src;size_t pos=0;
+    explicit JsonReader(const string& s):src(s){}
+    void fail()const{throw std::runtime_error("Invalid JSON response at byte "+std::to_string(pos));}
+    void space(){while(pos<src.size() && (src[pos]==' '||src[pos]=='\t'||src[pos]=='\r'||src[pos]=='\n'))++pos;}
+    bool take(char c){space();if(pos<src.size()&&src[pos]==c){++pos;return true;}return false;}
+    void need(char c){if(!take(c))fail();}
+    uint32_t hex4(){
+        uint32_t n=0;
+        for(int i=0;i<4;++i){
+            if(pos>=src.size())fail();
+            char c=src[pos++];int v=c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:c>='A'&&c<='F'?c-'A'+10:-1;
+            if(v<0)fail();
+            n=n*16+(uint32_t)v;
+        }return n;
+    }
+    void appendUtf8(string& s,uint32_t c){
+        if(c<0x80)s+=(char)c;
+        else if(c<0x800){s+=(char)(0xC0|(c>>6));s+=(char)(0x80|(c&63));}
+        else if(c<0x10000){s+=(char)(0xE0|(c>>12));s+=(char)(0x80|((c>>6)&63));s+=(char)(0x80|(c&63));}
+        else {s+=(char)(0xF0|(c>>18));s+=(char)(0x80|((c>>12)&63));s+=(char)(0x80|((c>>6)&63));s+=(char)(0x80|(c&63));}
+    }
+    string stringValue(){
+        need('"');string s;
+        while(pos<src.size()){
+            unsigned char c=src[pos++];
+            if(c=='"')return s;
+            if(c<32)fail();
+            if(c!='\\'){s+=(char)c;continue;}
+            if(pos>=src.size())fail();
+            char e=src[pos++];
+            switch(e){
+                case '"':s+='"';break;case '\\':s+='\\';break;case '/':s+='/';break;
+                case 'b':s+='\b';break;case 'f':s+='\f';break;case 'n':s+='\n';break;
+                case 'r':s+='\r';break;case 't':s+='\t';break;
+                case 'u':{
+                    uint32_t cp=hex4();
+                    if(cp>=0xD800 && cp<=0xDBFF){
+                        if(pos+2>src.size() || src[pos]!='\\' || src[pos+1]!='u')fail();
+                        pos+=2;uint32_t low=hex4();
+                        if(low<0xDC00 || low>0xDFFF)fail();
+                        cp=0x10000+((cp-0xD800)<<10)+(low-0xDC00);
+                    }else if(cp>=0xDC00 && cp<=0xDFFF)fail();
+                    appendUtf8(s,cp);break;
+                }
+                default:fail();
+            }
+        }fail();return {};
+    }
+    bool digit()const{return pos<src.size() && src[pos]>='0'&&src[pos]<='9';}
+    json read(int depth=0){
+        if(depth>64)fail();
+        space();if(pos>=src.size())fail();json j;char c=src[pos];
+        if(c=='{'){
+            ++pos;j.type=json::Object;if(take('}'))return j;
+            do{string k=stringValue();need(':');j.object[k]=read(depth+1);}while(take(','));
+            need('}');return j;
+        }
+        if(c=='['){
+            ++pos;j.type=json::Array;if(take(']'))return j;
+            do{j.array.push_back(read(depth+1));}while(take(','));
+            need(']');return j;
+        }
+        if(c=='"'){j.type=json::String;j.text=stringValue();return j;}
+        if(src.compare(pos,4,"null")==0){pos+=4;return j;}
+        if(src.compare(pos,4,"true")==0){pos+=4;j.type=json::Boolean;j.flag=true;return j;}
+        if(src.compare(pos,5,"false")==0){pos+=5;j.type=json::Boolean;return j;}
+        size_t start=pos;
+        if(src[pos]=='-')++pos;
+        if(!digit())fail();
+        if(src[pos]=='0')++pos;else while(digit())++pos;
+        if(pos<src.size()&&src[pos]=='.'){++pos;if(!digit())fail();
+            while(digit())++pos;}
+        if(pos<src.size()&&(src[pos]=='e'||src[pos]=='E')){
+            ++pos;if(pos<src.size()&&(src[pos]=='+'||src[pos]=='-'))++pos;
+            if(!digit())fail();
+            while(digit())++pos;
+        }
+        j.type=json::Number;j.text=src.substr(start,pos-start);return j;
+    }
+};
+json json::parse(const string& s){
+    JsonReader r(s);
+    if(s.size()>=3 && (unsigned char)s[0]==0xEF && (unsigned char)s[1]==0xBB && (unsigned char)s[2]==0xBF)r.pos=3;
+    json j=r.read();r.space();if(r.pos!=s.size())r.fail();return j;
+}
+string quoteJson(const string& s){
+    string out="\"";const char* hex="0123456789abcdef";
+    for(unsigned char c:s){
+        if(c=='"')out+="\\\"";
+        else if(c=='\\')out+="\\\\";
+        else if(c<32){out+="\\u00";out+=hex[c>>4];out+=hex[c&15];}
+        else out+=(char)c;
+    }return out+'"';
+}
+
+
+enum { API=101,PROMPT,SEND,CLIP,SHOT,CLEAR,OUTPUT,PASTE_KEY,COPY,MODEL,MODELS,
+       PROTECT,STATUS,FORGET_KEY,REGION,CHATS,NEWCHAT,DELETECHAT,FOLDER,FAST,STOP,QUIT,SEARCH,BRAND,SUBTITLE,SIDETITLE,CHATINFO,APILABEL,MODELLABEL,REPLYLABEL,PROMPTLABEL,HINT,PIN,SETTINGS,MODELBADGE,EMPTYTITLE,EMPTYSUB,SUGGEST1,SUGGEST2,SUGGEST3,ATTACH,PREVIEW,ATTACHINFO,REMOVEIMAGE,CANCELEDIT,BOTTOM,EXPORTCHAT,IMPORTCHAT };
+enum { HK_HIDE=1,HK_CLIP,HK_QUIT,HK_REGION,HK_FULL };
+const UINT WM_TRAY=WM_APP+10,WM_SHOW_APP=WM_APP+11;
+const wchar_t* CLASS_NAME=L"GeminiDesktopV4";
+const wchar_t* CREDENTIAL_TARGET=L"GeminiDesktopFixed/APIKey";
+const size_t MAX_RESPONSE=16*1024*1024;
+HWND mainWnd=nullptr,apiEdit=nullptr,promptEdit=nullptr,outputEdit=nullptr;
+HWND modelCombo=nullptr,statusLabel=nullptr,protectCheck=nullptr,chatCombo=nullptr,fastCheck=nullptr;
+HFONT uiFont=nullptr,titleFont=nullptr,smallFont=nullptr;
+HBRUSH pageBrush=nullptr,sideBrush=nullptr,whiteBrush=nullptr;
+const COLORREF PAGE=RGB(239,244,252),SIDE=RGB(228,236,249),INK=RGB(32,43,65),ACCENT=RGB(49,103,225),PAPER=RGB(252,253,255);
+int uiDpi=96;
+bool syncingPrompt=false,uiReady=false,settingsOpen=false;
+unsigned buildToken();
+void updateEmptyUI();
+void revealSettings();
+void layoutUI();
+void refreshAttachment();
+void invalidateChatRow();
+void updateBottom();
+void cancelArchive();
+void startArchive(bool importing);
+void finishArchive();
+void renderConversation(bool follow);
+void beginEdit(size_t index);
+std::vector<size_t> visibleChats;
+int px(int n){return MulDiv(n,uiDpi,96);}
+HANDLE worker=nullptr;
+bool archiveBusy=false;
+bool busy=false,closePending=false,secondPoint=false,trayAdded=false,historyWritable=true;
+POINT firstPoint{};
+UINT taskbarCreated=0;
+NOTIFYICONDATAW tray{};
+wstring appDir,historyWarning;
+string preferredModel="AUTO";
+bool fastMode=true;
+
+wstring wide(const string& s) {
+    if(s.empty())return {};
+    DWORD flags=MB_ERR_INVALID_CHARS;
+    int n=MultiByteToWideChar(CP_UTF8,flags,s.data(),(int)s.size(),nullptr,0);
+    if(n<=0){flags=0;n=MultiByteToWideChar(CP_UTF8,flags,s.data(),(int)s.size(),nullptr,0);}
+    if(n<=0)return L"[UTF-8 decode error]";
+    wstring r(n,L'\0');
+    MultiByteToWideChar(CP_UTF8,flags,s.data(),(int)s.size(),&r[0],n);
+    return r;
+}
+string utf8(const wstring& s) {
+    if(s.empty()) return {};
+    int n=WideCharToMultiByte(CP_UTF8,0,s.data(),(int)s.size(),nullptr,0,nullptr,nullptr);
+    string r(n,'\0');
+    if(n) WideCharToMultiByte(CP_UTF8,0,s.data(),(int)s.size(),&r[0],n,nullptr,nullptr);
+    return r;
+}
+wstring readText(HWND h) {
+    int n=GetWindowTextLengthW(h);
+    wstring s(n+1,L'\0');
+    int used=GetWindowTextW(h,&s[0],n+1);
+    s.resize(used); return s;
+}
+wstring windowsLines(const wstring& s,bool precedingCR=false) {
+    wstring out;
+    out.reserve(s.size());
+    for(size_t i=0;i<s.size();++i) {
+        if(s[i]==L'\n' && (i? s[i-1]!=L'\r' : !precedingCR)) out+=L'\r';
+        out+=s[i];
+    }
+    return out;
+}
+bool outputEndsWithCR=false;
+bool liveStarted=false,interactiveResize=false;
+unsigned unreadUpdates=0;bool bottomPosted=false;
+bool outputAtBottom(){SCROLLINFO si{};si.cbSize=sizeof(si);si.fMask=SIF_ALL;return !GetScrollInfo(outputEdit,SB_VERT,&si)||si.nPos+(int)si.nPage>=si.nMax-2;}
+void queueBottom(){if(uiReady&&!bottomPosted){bottomPosted=PostMessageW(mainWnd,WM_APP+31,0,0)!=FALSE;}}
+WNDPROC outputBase=nullptr;
+LRESULT CALLBACK outputProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
+    LRESULT result=CallWindowProcW(outputBase,hwnd,msg,wp,lp);
+    if(msg==WM_VSCROLL||msg==WM_MOUSEWHEEL||msg==WM_KEYUP||msg==WM_LBUTTONUP||msg==WM_SIZE)queueBottom();
+    return result;
+}
+void updateBottom(){
+    if(!uiReady)return;
+    DWORD a=0,b=0;SendMessageW(outputEdit,EM_GETSEL,(WPARAM)&a,(LPARAM)&b);
+    bool end=outputAtBottom();if(end&&a==b)unreadUpdates=0;
+    HWND button=GetDlgItem(mainWnd,BOTTOM);bool show=IsWindowVisible(outputEdit)&&(!end||unreadUpdates);
+    wstring label=L"Xuống cuối  ↓";
+    if(unreadUpdates)label=L"Xuống cuối (+"+std::to_wstring(std::min(unreadUpdates,999u))+(unreadUpdates>999?L"+)":L")");
+    if(readText(button)!=label)SetWindowTextW(button,label.c_str());
+    if((IsWindowVisible(button)!=FALSE)!=show)ShowWindow(button,show?SW_SHOW:SW_HIDE);
+}
+void selectOutputEnd(){
+    GETTEXTLENGTHEX length{GTL_NUMCHARS|GTL_PRECISE,1200};
+    LRESULT end=SendMessageW(outputEdit,EM_GETTEXTLENGTHEX,(WPARAM)&length,0);
+    if(end<0)end=GetWindowTextLengthW(outputEdit);
+    SendMessageW(outputEdit,EM_SETSEL,(WPARAM)end,(LPARAM)end);
+}
+void editOutput(const wstring& s,bool append,bool force){
+    if(append&&s.empty())return;
+    wstring value=windowsLines(s,append&&outputEndsWithCR);
+    SCROLLINFO si{};si.cbSize=sizeof(si);si.fMask=SIF_ALL;
+    bool follow=force||!GetScrollInfo(outputEdit,SB_VERT,&si)||si.nPos+(int)si.nPage>=si.nMax-2;
+    DWORD a=0,b=0;SendMessageW(outputEdit,EM_GETSEL,(WPARAM)&a,(LPARAM)&b);
+    if(!force&&a!=b)follow=false;
+    POINT scroll{};SendMessageW(outputEdit,EM_GETSCROLLPOS,0,(LPARAM)&scroll);
+    bool visible=IsWindowVisible(outputEdit)!=FALSE;
+    if(visible)SendMessageW(outputEdit,WM_SETREDRAW,FALSE,0);
+    if(append){
+        selectOutputEnd();
+        CHARFORMAT2W plain{};plain.cbSize=sizeof(plain);plain.dwMask=CFM_LINK|CFM_BOLD|CFM_ITALIC|CFM_UNDERLINE|CFM_FACE|CFM_SIZE|CFM_COLOR|CFM_BACKCOLOR;
+        plain.yHeight=220;plain.crTextColor=INK;plain.crBackColor=PAPER;lstrcpyW(plain.szFaceName,L"Segoe UI");
+        SendMessageW(outputEdit,EM_SETCHARFORMAT,SCF_SELECTION,(LPARAM)&plain);
+        SendMessageW(outputEdit,EM_SETREADONLY,FALSE,0);
+        SendMessageW(outputEdit,EM_REPLACESEL,FALSE,(LPARAM)value.c_str());
+        SendMessageW(outputEdit,EM_SETREADONLY,TRUE,0);
+    }else SetWindowTextW(outputEdit,value.c_str());
+    outputEndsWithCR=!s.empty()&&s.back()==L'\r';
+    if(append&&!follow&&unreadUpdates<1000000)++unreadUpdates;
+    if(follow)unreadUpdates=0;
+    if(follow){if(!append)selectOutputEnd();SendMessageW(outputEdit,EM_SCROLLCARET,0,0);}
+    else{SendMessageW(outputEdit,EM_SETSEL,a,b);SendMessageW(outputEdit,EM_SETSCROLLPOS,0,(LPARAM)&scroll);}
+    if(visible){SendMessageW(outputEdit,WM_SETREDRAW,TRUE,0);RedrawWindow(outputEdit,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_FRAME);}
+    updateBottom();
+}
+void output(const wstring& s,bool force=false){editOutput(s,false,force);}
+void appendOutput(const wstring& s){editOutput(s,true,false);}
+void status(const wstring& s) {
+    static wstring previous;
+    if(s!=previous){SetWindowTextW(statusLabel,s.c_str());previous=s;}
+}
+std::runtime_error winError(const string& what, DWORD code=GetLastError()) {
+    string detail=what+" (Windows error "+std::to_string(code)+").";
+    if(code==12002)detail+="\nKết nối tới Gemini đã hết thời gian chờ. Kiểm tra mạng, proxy/VPN rồi thử lại; chưa thể kết luận API key sai.";
+    return std::runtime_error(detail);
+}
+string trim(string s) {
+    auto start=s.find_first_not_of(" \t\r\n\"'");
+    if(start==string::npos) return {};
+    return s.substr(start,s.find_last_not_of(" \t\r\n\"'")-start+1);
+}
+bool validIdentifier(const string& s) {
+    return !s.empty() && std::all_of(s.begin(),s.end(),[](unsigned char c){
+        return (c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.';
+    });
+}
+
+wstring clipboardText() {
+    if(!OpenClipboard(mainWnd)) throw winError("Không mở được Clipboard");
+    struct Guard { ~Guard(){CloseClipboard();} } guard;
+    HANDLE data=GetClipboardData(CF_UNICODETEXT);
+    if(!data) throw std::runtime_error("Clipboard không có văn bản. Hãy nhấn Ctrl+C trước.");
+    auto p=static_cast<const wchar_t*>(GlobalLock(data));
+    if(!p) throw winError("Không đọc được Clipboard");
+    size_t count=GlobalSize(data)/sizeof(wchar_t), n=0;
+    while(n<count && p[n]) ++n;
+    wstring result(p,n); GlobalUnlock(data); return result;
+}
+void copyText(const wstring& s) {
+    size_t bytes=(s.size()+1)*sizeof(wchar_t);
+    HGLOBAL mem=GlobalAlloc(GMEM_MOVEABLE,bytes);
+    if(!mem) throw winError("Không cấp được bộ nhớ Clipboard");
+    void* p=GlobalLock(mem);
+    if(!p){GlobalFree(mem);throw winError("Không ghi được Clipboard");}
+    memcpy(p,s.c_str(),bytes); GlobalUnlock(mem);
+    if(!OpenClipboard(mainWnd)){GlobalFree(mem);throw winError("Clipboard đang bận");}
+    if(!EmptyClipboard() || !SetClipboardData(CF_UNICODETEXT,mem)) {
+        DWORD e=GetLastError(); CloseClipboard();GlobalFree(mem);throw winError("Không sao chép được",e);
+    }
+    CloseClipboard(); // Windows now owns mem.
+}
+void saveKey(const string& key) {
+    if(key.size()>CRED_MAX_CREDENTIAL_BLOB_SIZE) throw std::runtime_error("API key quá dài.");
+    CREDENTIALW c{};
+    c.Type=CRED_TYPE_GENERIC;
+    c.TargetName=const_cast<LPWSTR>(CREDENTIAL_TARGET);
+    c.UserName=const_cast<LPWSTR>(L"Gemini API");
+    c.CredentialBlobSize=(DWORD)key.size();
+    c.CredentialBlob=(LPBYTE)key.data();
+    c.Persist=CRED_PERSIST_LOCAL_MACHINE;
+    if(!CredWriteW(&c,0)) throw winError("Không lưu được key vào Windows Credential Manager");
+}
+string loadKey() {
+    PCREDENTIALW c=nullptr;
+    if(CredReadW(CREDENTIAL_TARGET,CRED_TYPE_GENERIC,0,&c)) {
+        string s((char*)c->CredentialBlob,c->CredentialBlobSize);CredFree(c);return s;
+    }
+    wchar_t value[4096]{};
+    DWORD n=GetEnvironmentVariableW(L"GEMINI_API_KEY",value,4096);
+    return n>0 && n<4096 ? utf8(value) : string();
+}
+
+string base64(const std::vector<uint8_t>& bytes) {
+    static const char table[]="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    string r; r.reserve((bytes.size()+2)/3*4);
+    for(size_t i=0;i<bytes.size();i+=3) {
+        uint32_t x=uint32_t(bytes[i])<<16;
+        if(i+1<bytes.size()) x|=uint32_t(bytes[i+1])<<8;
+        if(i+2<bytes.size()) x|=bytes[i+2];
+        r+=table[(x>>18)&63];r+=table[(x>>12)&63];
+        r+=i+1<bytes.size()?table[(x>>6)&63]:'=';
+        r+=i+2<bytes.size()?table[x&63]:'=';
+    }
+    return r;
+}
+
+
+template<class T> struct ComPtr {
+    T* p=nullptr;~ComPtr(){if(p)p->Release();}
+    ComPtr()=default;ComPtr(const ComPtr&)=delete;ComPtr& operator=(const ComPtr&)=delete;
+    T** put(){return &p;}T* operator->()const{return p;}
+};
+void checkHr(HRESULT hr,const char* action){if(FAILED(hr))throw std::runtime_error(string(action)+" (HRESULT "+std::to_string((unsigned long)hr)+")");}
+struct ComScope {ComScope(){checkHr(CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED),"Không khởi tạo được bộ xử lý ảnh");}~ComScope(){CoUninitialize();}};
+void makeImaging(ComPtr<IWICImagingFactory>& f){checkHr(CoCreateInstance(CLSID_WICImagingFactory,nullptr,CLSCTX_INPROC_SERVER,IID_IWICImagingFactory,(void**)f.put()),"Không mở được Windows Imaging");}
+struct Pixels {UINT w=0,h=0;std::vector<uint8_t> bytes;};
+Pixels readPixels(IWICImagingFactory* factory,IWICBitmapSource* source){
+    UINT w=0,h=0;checkHr(source->GetSize(&w,&h),"Không đọc được kích thước ảnh");
+    if(!w||!h||w>30000||h>30000||(uint64_t)w*h>100000000)throw std::runtime_error("Ảnh quá lớn (tối đa 100 triệu điểm ảnh).");
+    double scale=std::min(1.0,1600.0/std::max(w,h));Pixels result;
+    result.w=std::max(1u,(UINT)(w*scale));result.h=std::max(1u,(UINT)(h*scale));
+    ComPtr<IWICBitmapScaler> scaler;checkHr(factory->CreateBitmapScaler(scaler.put()),"Không tạo được bộ thu nhỏ ảnh");
+    checkHr(scaler->Initialize(source,result.w,result.h,WICBitmapInterpolationModeFant),"Không thu nhỏ được ảnh");
+    ComPtr<IWICFormatConverter> convert;checkHr(factory->CreateFormatConverter(convert.put()),"Không tạo được bộ đổi ảnh");
+    checkHr(convert->Initialize(scaler.p,GUID_WICPixelFormat32bppBGRA,WICBitmapDitherTypeNone,nullptr,0,WICBitmapPaletteTypeCustom),"Không đổi được ảnh");
+    result.bytes.resize((size_t)result.w*result.h*4);
+    checkHr(convert->CopyPixels(nullptr,result.w*4,(UINT)result.bytes.size(),result.bytes.data()),"Không đọc được điểm ảnh");
+    // Flatten transparency on white for predictable previews and model input.
+    for(size_t i=0;i<result.bytes.size();i+=4){unsigned a=result.bytes[i+3];for(int k=0;k<3;++k)result.bytes[i+k]=(uint8_t)((result.bytes[i+k]*a+255*(255-a)+127)/255);result.bytes[i+3]=255;}
+    return result;
+}
+Pixels decodeImageFile(const wstring& path){
+    WIN32_FILE_ATTRIBUTE_DATA info{};
+    if(!GetFileAttributesExW(path.c_str(),GetFileExInfoStandard,&info))throw winError("Không đọc được file ảnh");
+    if(info.dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY||info.nFileSizeHigh||info.nFileSizeLow>25*1024*1024)throw std::runtime_error("Chọn một file ảnh nhỏ hơn 25 MB.");
+    ComPtr<IWICImagingFactory> f;makeImaging(f);ComPtr<IWICBitmapDecoder> decoder;ComPtr<IWICBitmapFrameDecode> frame;
+    checkHr(f->CreateDecoderFromFilename(path.c_str(),nullptr,GENERIC_READ,WICDecodeMetadataCacheOnDemand,decoder.put()),"File không phải ảnh được Windows hỗ trợ");
+    checkHr(decoder->GetFrame(0,frame.put()),"Không đọc được khung ảnh");return readPixels(f.p,frame.p);
+}
+Pixels decodeImageMemory(const uint8_t* data,size_t length){
+    if(!length||length>25*1024*1024)throw std::runtime_error("Ảnh Clipboard quá lớn hoặc rỗng.");
+    ComPtr<IWICImagingFactory> f;makeImaging(f);ComPtr<IWICStream> stream;ComPtr<IWICBitmapDecoder> decoder;ComPtr<IWICBitmapFrameDecode> frame;
+    checkHr(f->CreateStream(stream.put()),"Không tạo được luồng ảnh");
+    checkHr(stream->InitializeFromMemory((BYTE*)data,(DWORD)length),"Không đọc được ảnh Clipboard");
+    checkHr(f->CreateDecoderFromStream(stream.p,nullptr,WICDecodeMetadataCacheOnDemand,decoder.put()),"Ảnh Clipboard không hợp lệ");
+    checkHr(decoder->GetFrame(0,frame.put()),"Không đọc được ảnh Clipboard");return readPixels(f.p,frame.p);
+}
+std::vector<uint8_t> encodePng(const std::vector<uint8_t>& bgra,int w,int h){
+    if(w<=0||h<=0||(size_t)w*h*4!=bgra.size())throw std::runtime_error("Dữ liệu ảnh không hợp lệ.");
+    ComPtr<IWICImagingFactory> f;makeImaging(f);ComPtr<IStream> stream;
+    checkHr(CreateStreamOnHGlobal(nullptr,TRUE,stream.put()),"Không tạo được bộ nhớ ảnh");
+    ComPtr<IWICBitmapEncoder> encoder;ComPtr<IWICBitmapFrameEncode> frame;
+    checkHr(f->CreateEncoder(GUID_ContainerFormatPng,nullptr,encoder.put()),"Không tạo được bộ nén PNG");
+    checkHr(encoder->Initialize(stream.p,WICBitmapEncoderNoCache),"Không khởi tạo được PNG");
+    checkHr(encoder->CreateNewFrame(frame.put(),nullptr),"Không tạo được khung PNG");
+    checkHr(frame->Initialize(nullptr),"Không khởi tạo được khung PNG");checkHr(frame->SetSize((UINT)w,(UINT)h),"Không đặt được kích thước PNG");
+    WICPixelFormatGUID format=GUID_WICPixelFormat24bppBGR;
+    checkHr(frame->SetPixelFormat(&format),"Không đặt được định dạng PNG");
+    if(memcmp(&format,&GUID_WICPixelFormat24bppBGR,sizeof(format)))throw std::runtime_error("Windows không hỗ trợ PNG 24-bit.");
+    std::vector<uint8_t> bgr((size_t)w*h*3);
+    for(size_t i=0,j=0;i<bgra.size();i+=4,j+=3){bgr[j]=bgra[i];bgr[j+1]=bgra[i+1];bgr[j+2]=bgra[i+2];}
+    checkHr(frame->WritePixels((UINT)h,(UINT)w*3,(UINT)bgr.size(),bgr.data()),"Không ghi được ảnh PNG");
+    checkHr(frame->Commit(),"Không hoàn tất khung PNG");checkHr(encoder->Commit(),"Không hoàn tất ảnh PNG");
+    STATSTG stat{};checkHr(stream->Stat(&stat,STATFLAG_NONAME),"Không đọc được dung lượng PNG");
+    if(stat.cbSize.QuadPart>16*1024*1024)throw std::runtime_error("Ảnh PNG quá lớn.");
+    LARGE_INTEGER zero{};checkHr(stream->Seek(zero,STREAM_SEEK_SET,nullptr),"Không đọc lại được PNG");
+    std::vector<uint8_t> result((size_t)stat.cbSize.QuadPart);ULONG got=0;
+    checkHr(stream->Read(result.data(),(ULONG)result.size(),&got),"Không đọc đủ dữ liệu PNG");
+    if(got!=result.size())throw std::runtime_error("Dữ liệu PNG chưa đầy đủ.");
+    return result;
+}
+
+// All screen/GDI operations stay on the UI thread; restore the window on every exit.
+std::vector<uint8_t> capture(int x,int y,int w,int h) {
+    if(w<2 || h<2) throw std::runtime_error("Vùng chụp quá nhỏ. Hãy chọn lại hai góc.");
+    struct CaptureResources {
+        bool visible; HDC screen=nullptr, dc=nullptr; HBITMAP bitmap=nullptr; HGDIOBJ old=nullptr;
+        explicit CaptureResources(bool v):visible(v){}
+        ~CaptureResources(){
+            if(old && old!=HGDI_ERROR) SelectObject(dc,old);
+            if(bitmap) DeleteObject(bitmap);
+            if(dc) DeleteDC(dc);
+            if(screen) ReleaseDC(nullptr,screen);
+            if(visible) ShowWindow(mainWnd,SW_SHOWNA);
+        }
+    } r(IsWindowVisible(mainWnd)!=FALSE);
+    if(r.visible){ ShowWindow(mainWnd,SW_HIDE);DwmFlush(); }
+    double scale=std::min(1.0,1600.0/std::max(w,h));
+    int dw=std::max(1,(int)(w*scale)), dh=std::max(1,(int)(h*scale));
+    r.screen=GetDC(nullptr);
+    if(!r.screen) throw winError("Không lấy được màn hình");
+    r.dc=CreateCompatibleDC(r.screen);
+    r.bitmap=CreateCompatibleBitmap(r.screen,dw,dh);
+    if(!r.dc || !r.bitmap) throw winError("Không tạo được ảnh màn hình");
+    r.old=SelectObject(r.dc,r.bitmap);
+    if(!r.old || r.old==HGDI_ERROR) throw winError("Không chọn được bitmap");
+    if(!SetStretchBltMode(r.dc,HALFTONE) || !SetBrushOrgEx(r.dc,0,0,nullptr))
+        throw winError("Không chuẩn bị được bộ chụp ảnh");
+    if(!StretchBlt(r.dc,0,0,dw,dh,r.screen,x,y,w,h,SRCCOPY|CAPTUREBLT))
+        throw winError("Chụp màn hình thất bại");
+    if(!SelectObject(r.dc,r.old))throw winError("Không bỏ chọn được bitmap");
+    r.old=nullptr; // Deselect BEFORE GetDIBits.
+    BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth=dw;info.bmiHeader.biHeight=-dh;info.bmiHeader.biPlanes=1;
+    info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+    std::vector<uint8_t> pixels((size_t)dw*dh*4);
+    if(GetDIBits(r.screen,r.bitmap,0,(UINT)dh,pixels.data(),&info,DIB_RGB_COLORS)!=dh)
+        throw winError("Không đọc được ảnh màn hình");
+    return encodePng(pixels,dw,dh);
+}
+
+
+// JSON serialization preserves returned thoughtSignature fields.
+json objectJson(){json j;j.type=json::Object;return j;}
+json arrayJson(){json j;j.type=json::Array;return j;}
+json stringJson(const string& s){json j;j.type=json::String;j.text=s;return j;}
+string dumpJson(const json& j){
+    if(j.type==json::String)return quoteJson(j.text);
+    if(j.type==json::Number)return j.text;
+    if(j.type==json::Boolean)return j.flag?"true":"false";
+    if(j.type==json::Null)return "null";
+    string s=j.type==json::Array?"[":"{";bool first=true;
+    if(j.type==json::Array){for(const auto& v:j.array){if(!first)s+=',';first=false;s+=dumpJson(v);}}
+    else for(const auto& kv:j.object){if(!first)s+=',';first=false;s+=quoteJson(kv.first)+":"+dumpJson(kv.second);}
+    return s+(j.type==json::Array?']':'}');
+}
+json textContent(const string& role,const string& text){
+    json c=objectJson(),p=objectJson(),a=arrayJson();
+    p.object["text"]=stringJson(text);a.array.push_back(p);
+    c.object["role"]=stringJson(role);c.object["parts"]=a;return c;
+}
+struct ReplyVersion {string answer,model,state;json content;};
+bool validReplyState(const string& state){return state=="ok"||state=="partial"||state=="error"||state=="interrupted";}
+struct Turn {string question,answer,model,time,image,state="pending";json content;std::vector<ReplyVersion> replies;size_t replyIndex=0;};
+ReplyVersion replyOf(const Turn& t){ReplyVersion r;r.answer=t.answer;r.model=t.model;r.state=t.state;r.content=t.content;return r;}
+void chooseReply(Turn& t,size_t index){
+    if(index>=t.replies.size())throw std::runtime_error("Phiên bản trả lời không còn tồn tại.");
+    const auto& r=t.replies[index];t.answer=r.answer;t.model=r.model;t.state=r.state;t.content=r.content;t.replyIndex=index;
+}
+void rememberReply(Turn& t){t.replies.push_back(replyOf(t));t.replyIndex=t.replies.size()-1;}
+Turn contextTurn(const Turn& t){Turn c;c.question=t.question;c.answer=t.answer;c.model=t.model;c.time=t.time;c.image=t.image;c.state=t.state;c.content=t.content;return c;}
+string replyJson(const ReplyVersion& r){return "{\"answer\":"+quoteJson(r.answer)+",\"model\":"+quoteJson(r.model)+",\"state\":"+quoteJson(r.state)+",\"content\":"+dumpJson(r.content)+"}";}
+
+struct Chat {string id,title,draft,draftImage;int editIndex=-1;std::vector<Turn> turns;};
+std::vector<Chat> chats;
+size_t selectedChat=0;
+string nowText(){
+    SYSTEMTIME t;GetLocalTime(&t);char s[64];
+    snprintf(s,sizeof(s),"%04u-%02u-%02u %02u:%02u:%02u",t.wYear,t.wMonth,t.wDay,t.wHour,t.wMinute,t.wSecond);return s;
+}
+string newId(){
+    FILETIME t;GetSystemTimeAsFileTime(&t);static unsigned serial=0;
+    return std::to_string((uint64_t(t.dwHighDateTime)<<32)|t.dwLowDateTime)+"-"+std::to_string(++serial);
+}
+void newChat(){Chat c;c.id=newId();c.title="Cuộc trò chuyện mới";chats.push_back(c);selectedChat=chats.size()-1;}
+struct FileHandle {
+    HANDLE h;explicit FileHandle(HANDLE v):h(v){}
+    ~FileHandle(){if(h && h!=INVALID_HANDLE_VALUE)CloseHandle(h);}
+    FileHandle(const FileHandle&)=delete;FileHandle& operator=(const FileHandle&)=delete;
+};
+string readFile(const wstring& path){
+    FileHandle f(CreateFileW(path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
+    if(f.h==INVALID_HANDLE_VALUE)throw winError("Không mở được file dữ liệu");
+    LARGE_INTEGER n{};
+    if(!GetFileSizeEx(f.h,&n)||n.QuadPart<0||n.QuadPart>64*1024*1024)throw std::runtime_error("File lịch sử quá lớn hoặc không hợp lệ.");
+    string data((size_t)n.QuadPart,'\0');DWORD got=0;
+    if(!data.empty()&&(!ReadFile(f.h,&data[0],(DWORD)data.size(),&got,nullptr)||got!=data.size()))throw winError("Không đọc đủ lịch sử");
+    return data;
+}
+string historyJson(){
+    // Serialize directly: do not clone every turn and thought signature into a JSON tree.
+    string out="{\"version\":\"1\",\"active\":"+quoteJson(chats.empty()?"":chats[selectedChat].id);
+    out+=",\"model\":"+quoteJson(preferredModel)+",\"fast\":"+quoteJson(fastMode?"1":"0")+",\"chats\":[";
+    bool firstChat=true;
+    for(const auto& c:chats){
+        if(!firstChat)out+=',';
+        firstChat=false;
+        out+="{\"id\":"+quoteJson(c.id)+",\"title\":"+quoteJson(c.title)+",\"draft\":"+quoteJson(c.draft)+",\"draftImage\":"+quoteJson(c.draftImage)+",\"editIndex\":"+quoteJson(std::to_string(c.editIndex))+",\"turns\":[";
+        bool firstTurn=true;
+        for(const auto& t:c.turns){
+            if(!firstTurn)out+=',';
+            firstTurn=false;
+            out+="{\"question\":"+quoteJson(t.question)+",\"answer\":"+quoteJson(t.answer);
+            out+=",\"model\":"+quoteJson(t.model)+",\"time\":"+quoteJson(t.time);
+            out+=",\"state\":"+quoteJson(t.state)+",\"image\":"+quoteJson(t.image)+",\"content\":"+dumpJson(t.content);
+            out+=",\"replyIndex\":"+quoteJson(std::to_string(t.replyIndex))+",\"replies\":[";
+            for(size_t i=0;i<t.replies.size();++i){if(i)out+=',';out+=replyJson(t.replies[i]);}out+="]}";
+        }
+        out+="]}";
+    }
+    return out+"]}";
+}
+struct HistoryData {std::vector<Chat> chats;size_t selected=0;string model="AUTO";bool fast=true;};
+HistoryData decodeHistory(const string& data){
+    json root=json::parse(data);
+    if(root.value("version",string())!="1"||!root.contains("chats")||root.at("chats").type!=json::Array)
+        throw std::runtime_error("Định dạng lịch sử không hỗ trợ.");
+    HistoryData result;auto& loaded=result.chats;std::set<string> ids;
+    for(const auto& c:root.at("chats")){
+        Chat item;item.id=c.at("id").str();item.title=c.at("title").str();item.draft=c.value("draft",string());item.draftImage=c.value("draftImage",string());
+        string edit=c.value("editIndex",string("-1"));size_t used=0;item.editIndex=std::stoi(edit,&used);if(used!=edit.size()||item.editIndex< -1)throw std::runtime_error("Chỉ số sửa câu hỏi không hợp lệ.");
+        if(item.id.empty()||c.at("turns").type!=json::Array)throw std::runtime_error("Lịch sử không hợp lệ.");
+        if(!ids.insert(item.id).second)throw std::runtime_error("Lịch sử bị trùng ID.");
+        for(const auto& v:c.at("turns")){
+            Turn t;t.question=v.at("question").str();t.answer=v.at("answer").str();
+            t.image=v.value("image",string());t.model=v.value("model",string());t.time=v.value("time",string());t.state=v.value("state",string("error"));
+            if(v.contains("content"))t.content=v.at("content");
+            if(v.contains("replies")){
+                for(const auto& r:v.at("replies")){ReplyVersion reply;reply.answer=r.at("answer").str();reply.model=r.value("model",string());reply.state=r.at("state").str();if(!validReplyState(reply.state))throw std::runtime_error("Trạng thái phiên bản không hợp lệ.");if(r.contains("content"))reply.content=r.at("content");t.replies.push_back(std::move(reply));}
+                string index=v.value("replyIndex",string("0"));size_t usedIndex=0;
+                if(index.empty()||index.find_first_not_of("0123456789")!=string::npos)throw std::runtime_error("Chỉ số phiên bản không hợp lệ.");
+                unsigned long long indexValue=std::stoull(index,&usedIndex);
+                if(usedIndex!=index.size()||(t.replies.empty()?indexValue!=0:indexValue>=t.replies.size()))throw std::runtime_error("Chỉ số phiên bản không hợp lệ.");
+                t.replyIndex=(size_t)indexValue;
+            }
+            if(t.state=="pending"){t.state="interrupted";t.answer="Yêu cầu bị gián đoạn trước khi lưu xong kết quả.";if(!t.replies.empty())rememberReply(t);}
+            else if(!t.replies.empty())chooseReply(t,t.replyIndex);
+            item.turns.push_back(std::move(t));
+        }
+        if(item.editIndex>=0&&(size_t)item.editIndex>=item.turns.size())item.editIndex=-1;
+        loaded.push_back(item);
+    }
+    string active=root.value("active",string());
+    for(size_t i=0;i<loaded.size();++i)if(loaded[i].id==active)result.selected=i;
+    result.model=root.value("model",string("AUTO"));result.fast=root.value("fast",string("1"))!="0";
+    return result;
+}
+void parseHistory(const string& data){
+    HistoryData result=decodeHistory(data);chats.swap(result.chats);selectedChat=result.selected;
+    preferredModel=result.model;fastMode=result.fast;if(chats.empty())newChat();
+}
+void mergeImportedHistory(HistoryData& restored,const std::function<void()>& persist){
+    size_t count=restored.chats.size(),oldSize=chats.size(),oldSelected=selectedChat;
+    try{
+        for(auto& c:restored.chats)chats.push_back(std::move(c));
+        if(count)selectedChat=oldSize+std::min(restored.selected,count-1);
+        persist();
+    }catch(...){chats.resize(oldSize);selectedChat=oldSelected;throw;}
+}
+void saveHistory(){
+    static string lastSaved;
+    if(!historyWritable)throw std::runtime_error("Chưa thể lưu lịch sử; kiểm tra thư mục dữ liệu.");
+    string data=historyJson();
+    if(data.size()>64*1024*1024)throw std::runtime_error("Lịch sử vượt 64 MB. Hãy xóa các hội thoại cũ.");
+    wstring path=appDir+L"\\history.json",temp=appDir+L"\\history.tmp",backup=appDir+L"\\history.bak";
+    if(data==lastSaved&&GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES)return;
+    {
+        FileHandle f(CreateFileW(temp.c_str(),GENERIC_WRITE,0,nullptr,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,nullptr));
+        if(f.h==INVALID_HANDLE_VALUE)throw winError("Không tạo được file lịch sử tạm");
+        DWORD written=0;
+        if(!WriteFile(f.h,data.data(),(DWORD)data.size(),&written,nullptr)||written!=data.size()||!FlushFileBuffers(f.h))
+            throw winError("Không ghi được lịch sử");
+    }
+    BOOL ok=GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES
+        ?ReplaceFileW(path.c_str(),temp.c_str(),backup.c_str(),0,nullptr,nullptr)
+        :MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_WRITE_THROUGH);
+    if(!ok)throw winError("Không thay được file lịch sử; bản cũ vẫn được giữ");
+    lastSaved.swap(data);
+}
+void saveQuiet(){
+    try{saveHistory();historyWarning.clear();}
+    catch(const std::exception& e){historyWarning=L"Chưa lưu được lịch sử: "+wide(e.what());status(historyWarning);}
+}
+void loadHistory(){
+    wstring path=appDir+L"\\history.json",backup=appDir+L"\\history.bak";
+    if(GetFileAttributesW(path.c_str())==INVALID_FILE_ATTRIBUTES && GetFileAttributesW(backup.c_str())==INVALID_FILE_ATTRIBUTES){newChat();return;}
+    try{parseHistory(readFile(path));return;}catch(const std::exception&){}
+    bool recovered=false;
+    try{parseHistory(readFile(backup));recovered=true;}catch(const std::exception&){}
+    if(GetFileAttributesW(path.c_str())!=INVALID_FILE_ATTRIBUTES){
+        wstring preserved=appDir+L"\\history-corrupt-"+wide(newId())+L".json";
+        if(!MoveFileExW(path.c_str(),preserved.c_str(),MOVEFILE_WRITE_THROUGH))historyWritable=false;
+    }
+    if(!recovered){
+        if(GetFileAttributesW(backup.c_str())!=INVALID_FILE_ATTRIBUTES){
+            wstring preserved=appDir+L"\\history-backup-corrupt-"+wide(newId())+L".json";
+            if(!MoveFileExW(backup.c_str(),preserved.c_str(),MOVEFILE_WRITE_THROUGH))historyWritable=false;
+        }
+        chats.clear();newChat();
+    }
+    historyWarning=recovered?L"Đã khôi phục lịch sử từ history.bak.":L"Không đọc được lịch sử cũ. Bản lỗi được giữ để kiểm tra.";
+    if(!historyWritable)historyWarning+=L" Chưa cho phép ghi đè file cũ.";
+}
+Pixels previewPixels;string previewFile;
+bool safeImageName(const string& name){return !name.empty()&&name.size()<96&&validIdentifier(name)&&name.find("..") == string::npos&&name.size()>4&&name.substr(name.size()-4)==".png";}
+wstring imagePath(const string& name){if(!safeImageName(name))throw std::runtime_error("Tên ảnh lưu không hợp lệ.");return appDir+L"\\attachments\\"+wide(name);}
+string storeImage(const std::vector<uint8_t>& png){
+    wstring dir=appDir+L"\\attachments";
+    if(!CreateDirectoryW(dir.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS)throw winError("Không tạo được thư mục ảnh");
+    string name=newId()+".png";wstring path=imagePath(name);
+    bool created=false;
+    try{FileHandle file(CreateFileW(path.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr));
+     if(file.h==INVALID_HANDLE_VALUE)throw winError("Không lưu được ảnh đính kèm");
+     created=true;DWORD wrote=0;if(!WriteFile(file.h,png.data(),(DWORD)png.size(),&wrote,nullptr)||wrote!=png.size()||!FlushFileBuffers(file.h))throw winError("Không ghi đủ ảnh đính kèm");}
+    catch(...){if(created)DeleteFileW(path.c_str());throw;}
+    return name;
+}
+// A bounded, checksummed bundle contains only history and referenced PNG files, never credentials.
+const string ARCHIVE_MAGIC="GDESK-BACKUP-1\n";
+const uint64_t ARCHIVE_LIMIT=1024ull*1024*1024;
+uint32_t archiveCrc(const string& bytes){
+    struct Table{uint32_t values[256];Table(){for(unsigned i=0;i<256;++i){uint32_t v=i;for(int k=0;k<8;++k)v=(v>>1)^((v&1)?0xedb88320u:0);values[i]=v;}}};
+    static const Table table;uint32_t crc=0xffffffffu;
+    for(unsigned char c:bytes)crc=table.values[(crc^c)&255]^(crc>>8);
+    return crc^0xffffffffu;
+}
+string archiveU32(uint32_t value){string s(4,'\0');for(int i=0;i<4;++i)s[(size_t)i]=(char)((value>>(8*i))&255);return s;}
+uint32_t archiveNumber(const string& bytes){if(bytes.size()!=4)throw std::runtime_error("Bản sao lưu bị thiếu dữ liệu.");uint32_t n=0;for(int i=0;i<4;++i)n|=(uint32_t)(unsigned char)bytes[(size_t)i]<<(8*i);return n;}
+bool pngSignature(const string& bytes){return bytes.size()>=8&&bytes.compare(0,8,"\x89PNG\r\n\x1a\n",8)==0;}
+std::set<string> archiveImages(const std::vector<Chat>& list){
+    std::set<string> names;auto add=[&](const string& name){if(name.empty())return;if(!safeImageName(name))throw std::runtime_error("Tên ảnh trong lịch sử không hợp lệ.");names.insert(name);};
+    for(const auto& c:list){add(c.draftImage);for(const auto& t:c.turns)add(t.image);}
+    if(names.size()>10000)throw std::runtime_error("Bản sao lưu vượt 10.000 ảnh.");
+    return names;
+}
+void writeArchive(const string& history,const std::function<string(const string&)>& load,const std::function<void(const string&)>& output){
+    if(history.size()>64*1024*1024)throw std::runtime_error("Lịch sử vượt 64 MB.");
+    auto names=archiveImages(decodeHistory(history).chats);uint64_t total=0;
+    auto write=[&](const string& data){total+=data.size();if(total>ARCHIVE_LIMIT)throw std::runtime_error("Bản sao lưu vượt 1 GB.");output(data);};
+    write(ARCHIVE_MAGIC);write(archiveU32((uint32_t)history.size()));write(history);write(archiveU32(archiveCrc(history)));write(archiveU32((uint32_t)names.size()));
+    for(const auto& name:names){
+        string data=load(name);if(data.size()>16*1024*1024||!pngSignature(data))throw std::runtime_error("Ảnh thiếu, hỏng hoặc vượt 16 MB: "+name);
+        write(archiveU32((uint32_t)name.size()));write(name);write(archiveU32((uint32_t)data.size()));write(data);write(archiveU32(archiveCrc(data)));
+    }
+}
+HistoryData readArchive(const std::function<string(size_t)>& input,const std::function<void(const string&,const string&)>& image){
+    uint64_t total=0;
+    auto exact=[&](size_t count){total+=count;if(total>ARCHIVE_LIMIT)throw std::runtime_error("Bản sao lưu vượt 1 GB.");string data=input(count);if(data.size()!=count)throw std::runtime_error("Bản sao lưu bị cắt hoặc thiếu dữ liệu.");return data;};
+    if(exact(ARCHIVE_MAGIC.size())!=ARCHIVE_MAGIC)throw std::runtime_error("Không phải bản sao lưu Gemini Desk được hỗ trợ.");
+    uint32_t size=archiveNumber(exact(4));if(size>64*1024*1024)throw std::runtime_error("Lịch sử trong bản sao lưu vượt 64 MB.");
+    string history=exact(size);if(archiveNumber(exact(4))!=archiveCrc(history))throw std::runtime_error("Lịch sử trong bản sao lưu bị hỏng.");
+    HistoryData result=decodeHistory(history);auto expected=archiveImages(result.chats);
+    uint32_t count=archiveNumber(exact(4));if(count>10000||count!=expected.size())throw std::runtime_error("Danh sách ảnh sao lưu không khớp lịch sử.");
+    for(uint32_t i=0;i<count;++i){
+        uint32_t length=archiveNumber(exact(4));if(length<5||length>=96)throw std::runtime_error("Tên ảnh sao lưu không hợp lệ.");
+        string name=exact(length);if(!safeImageName(name)||expected.erase(name)!=1)throw std::runtime_error("Ảnh trùng hoặc không thuộc lịch sử.");
+        uint32_t bytes=archiveNumber(exact(4));if(bytes>16*1024*1024)throw std::runtime_error("Ảnh sao lưu vượt 16 MB.");
+        string data=exact(bytes);if(!pngSignature(data)||archiveNumber(exact(4))!=archiveCrc(data))throw std::runtime_error("Ảnh sao lưu bị hỏng: "+name);
+        image(name,data);
+    }
+    if(!input(1).empty())throw std::runtime_error("Bản sao lưu có dữ liệu thừa.");
+    return result;
+}
+struct ArchiveTask {
+    bool importing=false,ok=false;wstring path;string history,error;HistoryData imported;
+    std::vector<string> createdImages;HANDLE cancel=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+    ~ArchiveTask(){if(cancel)CloseHandle(cancel);}
+};
+std::unique_ptr<ArchiveTask> archiveTask;HANDLE archiveThread=nullptr;
+void archiveCheck(ArchiveTask& task){if(WaitForSingleObject(task.cancel,0)==WAIT_OBJECT_0)throw std::runtime_error("Đã hủy sao lưu/khôi phục.");}
+void removeImportedImages(ArchiveTask& task){for(const auto& name:task.createdImages)DeleteFileW(imagePath(name).c_str());task.createdImages.clear();}
+unsigned __stdcall runArchive(void* argument){
+    auto& task=*(ArchiveTask*)argument;wstring temporary;
+    try{
+        archiveCheck(task);
+        if(task.importing){
+            ComScope com;FileHandle file(CreateFileW(task.path.c_str(),GENERIC_READ,FILE_SHARE_READ,nullptr,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr));
+            if(file.h==INVALID_HANDLE_VALUE)throw winError("Không mở được bản sao lưu");
+            LARGE_INTEGER size{};if(!GetFileSizeEx(file.h,&size)||size.QuadPart<0||(uint64_t)size.QuadPart>ARCHIVE_LIMIT)throw std::runtime_error("Bản sao lưu quá lớn.");
+            std::map<string,string> remap;
+            task.imported=readArchive([&](size_t count){
+                archiveCheck(task);string data(count,'\0');size_t done=0;
+                while(done<count){archiveCheck(task);DWORD got=0,n=(DWORD)std::min<size_t>(count-done,65536);if(!ReadFile(file.h,&data[done],n,&got,nullptr))throw winError("Không đọc được bản sao lưu");if(!got)break;done+=got;}data.resize(done);return data;
+            },[&](const string& name,const string& bytes){
+                archiveCheck(task);decodeImageMemory((const uint8_t*)bytes.data(),bytes.size());
+                string stored=storeImage(std::vector<uint8_t>(bytes.begin(),bytes.end()));task.createdImages.push_back(stored);remap[name]=stored;
+            });
+            for(auto& c:task.imported.chats){
+                c.id=newId();c.title+=" · khôi phục";
+                if(!c.draftImage.empty())c.draftImage=remap.at(c.draftImage);
+                for(auto& t:c.turns)if(!t.image.empty())t.image=remap.at(t.image);
+            }
+            archiveCheck(task);
+        }else{
+            temporary=task.path+L".tmp-"+wide(newId());
+            {FileHandle file(CreateFileW(temporary.c_str(),GENERIC_WRITE,0,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr));
+             if(file.h==INVALID_HANDLE_VALUE){temporary.clear();throw winError("Không tạo được file sao lưu tạm");}
+             writeArchive(task.history,[&](const string& name){archiveCheck(task);return readFile(imagePath(name));},[&](const string& data){
+                 size_t done=0;while(done<data.size()){archiveCheck(task);DWORD wrote=0,n=(DWORD)std::min<size_t>(data.size()-done,65536);if(!WriteFile(file.h,data.data()+done,n,&wrote,nullptr)||wrote!=n)throw winError("Không ghi đủ bản sao lưu");done+=wrote;}
+             });
+             if(!FlushFileBuffers(file.h))throw winError("Không hoàn tất ghi bản sao lưu");}
+            archiveCheck(task);
+            if(!MoveFileExW(temporary.c_str(),task.path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))throw winError("Không hoàn tất file sao lưu");
+            temporary.clear();
+        }
+        task.ok=true;
+    }catch(const std::exception& e){task.error=e.what();}catch(...){task.error="Lỗi không xác định khi sao lưu/khôi phục.";}
+    if(!temporary.empty())DeleteFileW(temporary.c_str());
+    if(!task.ok&&task.importing)removeImportedImages(task);
+    return 0;
+}
+void cancelArchive(){if(archiveTask)SetEvent(archiveTask->cancel);}
+
+void refreshAttachment(){
+    if(chats.empty())return;
+    const auto& c=chats[selectedChat];
+    if(previewFile!=c.draftImage){
+        previewPixels=Pixels();previewFile=c.draftImage;
+        if(!previewFile.empty())try{previewPixels=decodeImageFile(imagePath(previewFile));}catch(const std::exception& e){status(wide(e.what()));}
+    }
+    wstring info=c.editIndex>=0?L"Đang sửa câu hỏi #"+std::to_wstring(c.editIndex+1)+L" · gửi thành nhánh mới":L"Ảnh đính kèm";
+    if(!c.draftImage.empty())info+=previewPixels.bytes.empty()?L"\nẢnh không còn trên máy; hãy chọn lại.":L"\n"+std::to_wstring(previewPixels.w)+L" × "+std::to_wstring(previewPixels.h)+L" · sẵn sàng gửi";
+    SetWindowTextW(GetDlgItem(mainWnd,ATTACHINFO),info.c_str());
+    if(uiReady){layoutUI();InvalidateRect(GetDlgItem(mainWnd,PREVIEW),nullptr,FALSE);invalidateChatRow();}
+}
+void attachPixels(Pixels pixels){
+    if(busy||archiveBusy||closePending)return;
+    string name=storeImage(encodePng(pixels.bytes,(int)pixels.w,(int)pixels.h));
+    chats[selectedChat].draftImage=name;previewPixels=std::move(pixels);previewFile=name;
+    refreshAttachment();saveQuiet();SetFocus(promptEdit);status(historyWarning.empty()?L"Đã đính kèm ảnh. Nhập câu hỏi rồi bấm Gửi; ảnh chưa được gửi lên API.":historyWarning);
+}
+void attachFile(const wstring& path){if(busy||archiveBusy||closePending)return;attachPixels(decodeImageFile(path));}
+void attachPng(const std::vector<uint8_t>& png){attachPixels(decodeImageMemory(png.data(),png.size()));}
+void chooseImage(){
+    if(busy||archiveBusy||closePending)return;
+    wchar_t path[32768]{};OPENFILENAMEW dialog{};dialog.lStructSize=sizeof(dialog);dialog.hwndOwner=mainWnd;
+    dialog.lpstrFilter=L"Ảnh (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff)\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff\0Tất cả file\0*.*\0\0";
+    dialog.lpstrFile=path;dialog.nMaxFile=32768;dialog.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
+    if(GetOpenFileNameW(&dialog))attachFile(path);else if(CommDlgExtendedError())throw std::runtime_error("Không mở được hộp chọn ảnh.");
+}
+void dropImage(HDROP drop){
+    struct Guard{HDROP h;~Guard(){DragFinish(h);}} guard{drop};
+    if(busy||archiveBusy||closePending)return;
+    if(DragQueryFileW(drop,0xFFFFFFFF,nullptr,0)!=1)throw std::runtime_error("Mỗi tin nhắn hỗ trợ một ảnh. Hãy kéo một file vào ô nhập.");
+    UINT len=DragQueryFileW(drop,0,nullptr,0);wstring path(len+1,L'\0');DragQueryFileW(drop,0,&path[0],len+1);path.resize(len);attachFile(path);
+}
+bool pasteImage(){
+    if(busy||closePending)return false;
+    UINT pngFormat=RegisterClipboardFormatW(L"PNG");
+    bool hasPng=pngFormat&&IsClipboardFormatAvailable(pngFormat),hasBitmap=IsClipboardFormatAvailable(CF_BITMAP)!=FALSE,hasFiles=IsClipboardFormatAvailable(CF_HDROP)!=FALSE;
+    if(!hasPng&&!hasBitmap&&!hasFiles)return false;
+    Pixels pixels;wstring file;
+    {
+        if(!OpenClipboard(mainWnd))throw winError("Clipboard đang bận");
+        struct Guard{~Guard(){CloseClipboard();}} guard;
+        if(hasPng){
+            HGLOBAL data=(HGLOBAL)GetClipboardData(pngFormat);SIZE_T size=data?GlobalSize(data):0;
+            const uint8_t* bytes=data?(const uint8_t*)GlobalLock(data):nullptr;
+            if(!bytes)throw winError("Không đọc được ảnh Clipboard");
+            struct Unlock{HGLOBAL h;~Unlock(){GlobalUnlock(h);}} unlock{data};pixels=decodeImageMemory(bytes,size);
+        }else if(hasBitmap){
+            HBITMAP bitmap=(HBITMAP)GetClipboardData(CF_BITMAP);if(!bitmap)throw winError("Không đọc được bitmap Clipboard");
+            ComPtr<IWICImagingFactory> f;makeImaging(f);ComPtr<IWICBitmap> source;
+            checkHr(f->CreateBitmapFromHBITMAP(bitmap,nullptr,WICBitmapIgnoreAlpha,source.put()),"Không đọc được bitmap Clipboard");pixels=readPixels(f.p,source.p);
+        }else{
+            HDROP drop=(HDROP)GetClipboardData(CF_HDROP);
+            if(!drop||DragQueryFileW(drop,0xFFFFFFFF,nullptr,0)!=1)throw std::runtime_error("Chỉ dán một file ảnh mỗi lần.");
+            UINT len=DragQueryFileW(drop,0,nullptr,0);file.resize(len+1);DragQueryFileW(drop,0,&file[0],len+1);file.resize(len);
+        }
+    }
+    if(!file.empty())attachFile(file);else attachPixels(std::move(pixels));return true;
+}
+void pasteComposer(){if(busy||archiveBusy||closePending)return;if(!pasteImage()){wstring text=clipboardText();SendMessageW(promptEdit,EM_REPLACESEL,TRUE,(LPARAM)text.c_str());SetFocus(promptEdit);}}
+WNDPROC promptBase=nullptr;
+LRESULT CALLBACK composerProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
+    try{
+        if(msg==WM_PASTE){if(busy||archiveBusy||closePending)return 0;if(pasteImage())return 0;}
+        if(msg==WM_DROPFILES){dropImage((HDROP)wp);return 0;}
+    }catch(const std::exception& e){status(wide(e.what()));return 0;}
+    return CallWindowProcW(promptBase,hwnd,msg,wp,lp);
+}
+string editableQuestion(const Turn& t){
+    string question=t.question,legacy="\n[Đã gửi ảnh ở lượt này; ảnh không được lưu vào lịch sử.]";
+    if(question.size()>=legacy.size()&&question.compare(question.size()-legacy.size(),legacy.size(),legacy)==0)question.erase(question.size()-legacy.size());
+    return question;
+}
+Chat editedBranch(const Chat& source,size_t index){
+    if(index>=source.turns.size())throw std::runtime_error("Câu hỏi cần sửa không còn tồn tại.");
+    Chat branch;branch.id=newId();branch.title=source.title+" · sửa";branch.draft=source.draft;branch.draftImage=source.draftImage;
+    branch.turns.assign(source.turns.begin(),source.turns.begin()+index);return branch;
+}
+void beginEdit(size_t index){
+    if(busy||archiveBusy||closePending)return;
+    Chat& c=chats[selectedChat];if(index>=c.turns.size())return;
+    string question=editableQuestion(c.turns[index]);
+    if((!c.draft.empty()&&c.draft!=question)||(!c.draftImage.empty()&&c.draftImage!=c.turns[index].image))
+        if(MessageBoxW(mainWnd,L"Thay bản nháp hiện tại bằng câu hỏi này?",L"Sửa câu hỏi",MB_YESNO|MB_DEFBUTTON2|MB_ICONQUESTION)!=IDYES)return;
+    c.draft=question;c.draftImage=c.turns[index].image;c.editIndex=(int)index;
+    syncingPrompt=true;SetWindowTextW(promptEdit,wide(c.draft).c_str());syncingPrompt=false;
+    refreshAttachment();saveQuiet();SetFocus(promptEdit);SendMessageW(promptEdit,EM_SETSEL,0,-1);
+    if(c.turns[index].image.empty()&&question!=c.turns[index].question)status(L"Ảnh của bản cũ chưa được lưu. Hãy đính kèm lại ảnh trước khi gửi.");
+}
+
+wstring lowerText(wstring s){if(!s.empty())CharLowerBuffW(&s[0],(DWORD)s.size());return s;}
+void refreshChats(){
+    wstring filter=lowerText(readText(GetDlgItem(mainWnd,SEARCH)));
+    SendMessageW(chatCombo,WM_SETREDRAW,FALSE,0);SendMessageW(chatCombo,LB_RESETCONTENT,0,0);visibleChats.clear();
+    int chosen=-1;
+    for(size_t k=chats.size();k>0;--k){size_t i=k-1;const auto& c=chats[i];
+        if(!filter.empty()&&lowerText(wide(c.title)).find(filter)==wstring::npos)continue;
+        if(i==selectedChat)chosen=(int)visibleChats.size();
+        visibleChats.push_back(i);SendMessageW(chatCombo,LB_ADDSTRING,0,(LPARAM)wide(c.title).c_str());
+    }
+    SendMessageW(chatCombo,LB_SETCURSEL,chosen,0);SendMessageW(chatCombo,WM_SETREDRAW,TRUE,0);InvalidateRect(chatCombo,nullptr,TRUE);
+    SetWindowTextW(GetDlgItem(mainWnd,CHATINFO),(std::to_wstring(chats.size())+L" cuộc trò chuyện · tự động lưu").c_str());
+}
+void invalidateChatRow(){
+    auto it=std::find(visibleChats.begin(),visibleChats.end(),selectedChat);
+    if(it==visibleChats.end())return;
+    RECT row{};if(SendMessageW(chatCombo,LB_GETITEMRECT,(WPARAM)(it-visibleChats.begin()),(LPARAM)&row)!=LB_ERR)InvalidateRect(chatCombo,&row,FALSE);
+}
+wstring transcript(bool all=false,const wstring* live=nullptr){
+    wstring out;
+    if(chats.empty())return out;
+    const auto& turns=chats[selectedChat].turns;
+    size_t first=!all&&turns.size()>30?turns.size()-30:0;
+    if(first)out=L"[Đang hiển thị 30 lượt gần nhất; các lượt cũ vẫn được lưu.]\n\n";
+    for(size_t i=first;i<turns.size();++i){
+        const Turn& t=turns[i];
+        out+=L"Bạn — "+wide(t.time)+L"\n"+wide(t.question)+L"\n\n";
+        if(t.state=="pending")out+=live?L"Gemini [đang trả lời]\n"+*live+L"\n\n":L"Gemini: đang xử lý...\n\n";
+        else out+=L"Gemini ["+wide(t.model)+L"] — "+wstring(t.state=="ok"?L"Hoàn tất":t.state=="partial"?L"Chưa đầy đủ":t.state=="interrupted"?L"Bị gián đoạn":L"Lỗi")+L"\n"+wide(t.answer)+L"\n\n";
+    }
+    return out;
+}
+// Markdown is rendered as native Rich Edit text. No HTML, scripts, or remote content execute.
+enum class TextStyle {Body,Bold,Italic,Heading1,Heading2,Code,InlineCode,Muted,Quote,Action};
+struct TextSpan {wstring text;TextStyle style;TextSpan(wstring t,TextStyle s):text(std::move(t)),style(s){}};
+struct TextAction {long first,last;int kind;size_t turn;wstring code;};
+long utf16Units(uint32_t c){return c>0xFFFF?2:1;}
+struct RichDocument {
+    std::vector<TextSpan> spans;std::vector<TextAction> actions;long length=0;
+    void add(const wstring& text,TextStyle style=TextStyle::Body){if(text.empty())return;spans.emplace_back(text,style);for(wchar_t c:text)length+=utf16Units((uint32_t)c);}
+    void action(const wstring& label,int kind,size_t turn,const wstring& code=L""){long start=length;add(label,TextStyle::Action);actions.push_back({start,length,kind,turn,code});}
+};
+wstring normalizeLines(const wstring& input){wstring out;out.reserve(input.size());for(size_t i=0;i<input.size();++i){if(input[i]==L'\r'){out+=L'\n';if(i+1<input.size()&&input[i+1]==L'\n')++i;}else if(input[i]!=0)out+=input[i];}return out;}
+void inlineMarkdown(RichDocument& doc,const wstring& line,TextStyle base=TextStyle::Body){
+    size_t pos=0,start=0;
+    while(pos<line.size()){
+        wstring marker;TextStyle style=base;
+        if(line.compare(pos,2,L"**")==0){marker=L"**";style=TextStyle::Bold;}
+        else if(line[pos]==L'`'){marker=L"`";style=TextStyle::InlineCode;}
+        else if(line[pos]==L'*'){marker=L"*";style=TextStyle::Italic;}
+        if(!marker.empty()){
+            size_t end=line.find(marker,pos+marker.size());
+            if(end!=wstring::npos&&end>pos+marker.size()){
+                doc.add(line.substr(start,pos-start),base);doc.add(line.substr(pos+marker.size(),end-pos-marker.size()),style);
+                pos=end+marker.size();start=pos;continue;
+            }
+        }
+        ++pos;
+    }
+    doc.add(line.substr(start),base);
+}
+void markdown(RichDocument& doc,const wstring& input,size_t turn){
+    wstring text=normalizeLines(input),code,language;bool fenced=false;wchar_t fenceChar=0;size_t fenceLength=0;
+    auto flushCode=[&](){
+        doc.action(L"[ Sao chép code ]",0,turn,code);if(!language.empty())doc.add(L"  "+language,TextStyle::Muted);doc.add(L"\n");
+        doc.add(code,TextStyle::Code);if(code.empty()||code.back()!=L'\n')doc.add(L"\n",TextStyle::Code);doc.add(L"\n");code.clear();
+    };
+    size_t pos=0;
+    while(pos<text.size()){
+        size_t end=text.find(L'\n',pos);bool newline=end!=wstring::npos;if(!newline)end=text.size();wstring line=text.substr(pos,end-pos);pos=newline?end+1:end;
+        size_t indent=0;while(indent<line.size()&&indent<4&&line[indent]==L' ')++indent;
+        size_t run=0;if(indent<4&&indent<line.size()&&(line[indent]==L'`'||line[indent]==L'~'))while(indent+run<line.size()&&line[indent+run]==line[indent])++run;
+        if(!fenced&&run>=3){fenced=true;fenceChar=line[indent];fenceLength=run;language=line.substr(indent+run);continue;}
+        if(fenced){
+            bool closing=run>=fenceLength&&line[indent]==fenceChar&&line.find_first_not_of(L" \t",indent+run)==wstring::npos;
+            if(closing){flushCode();fenced=false;}else{code+=line;if(newline)code+=L'\n';}continue;
+        }
+        size_t hashes=0;while(hashes<line.size()&&line[hashes]==L'#')++hashes;
+        if(hashes>=1&&hashes<=6&&hashes<line.size()&&line[hashes]==L' ')inlineMarkdown(doc,line.substr(hashes+1),hashes==1?TextStyle::Heading1:TextStyle::Heading2);
+        else if(line.compare(0,2,L"- ")==0||line.compare(0,2,L"* ")==0){doc.add(L"•  ");inlineMarkdown(doc,line.substr(2));}
+        else if(line.compare(0,2,L"> ")==0){doc.add(L"│  ",TextStyle::Quote);inlineMarkdown(doc,line.substr(2),TextStyle::Quote);}
+        else inlineMarkdown(doc,line);
+        if(newline)doc.add(L"\n");
+    }
+    if(fenced)flushCode();
+}
+void appendRtfChar(string& out,uint32_t c){
+    if(c=='\\'||c=='{'||c=='}'){out+='\\';out+=(char)c;}
+    else if(c=='\n')out+="\\par\n";
+    else if(c=='\t')out+="\\tab ";
+    else if(c>=32&&c<127)out+=(char)c;
+    else if(c>0xFFFF){c-=0x10000;appendRtfChar(out,0xD800+(c>>10));appendRtfChar(out,0xDC00+(c&1023));}
+    else out+="\\u"+std::to_string(c>=0x8000?(int)c-65536:(int)c)+"?";
+}
+string documentRtf(const RichDocument& doc){
+    string out="{\\rtf1\\ansi\\deff0\\uc1{\\fonttbl{\\f0 Segoe UI;}{\\f1 Consolas;}}{\\colortbl;\\red32\\green43\\blue65;\\red49\\green103\\blue225;\\red91\\green108\\blue137;\\red236\\green242\\blue253;}\\viewkind4\\pard\\sa60 ";
+    for(const auto& span:doc.spans){
+        out+="\\plain\\f0\\fs22\\cf1\\highlight0 ";
+        switch(span.style){
+            case TextStyle::Bold:out+="\\b ";break;
+            case TextStyle::Italic:out+="\\i ";break;
+            case TextStyle::Heading1:out+="\\b\\fs32 ";break;
+            case TextStyle::Heading2:out+="\\b\\fs27 ";break;
+            case TextStyle::Code:case TextStyle::InlineCode:out+="\\f1\\fs20\\highlight4 ";break;
+            case TextStyle::Muted:out+="\\cf3\\fs19 ";break;
+            case TextStyle::Quote:out+="\\cf3\\i ";break;
+            case TextStyle::Action:out+="\\cf2\\ul\\fs20 ";break;
+            default:break;
+        }
+        for(wchar_t c:span.text)appendRtfChar(out,(uint32_t)c);
+    }
+    return out+"}";
+}
+std::vector<TextAction> textActions;
+struct RtfInput{const string& data;size_t offset=0;explicit RtfInput(const string& s):data(s){}};
+DWORD CALLBACK readRtf(DWORD_PTR cookie,LPBYTE buffer,LONG requested,LONG* copied){
+    auto& source=*(RtfInput*)cookie;size_t n=std::min((size_t)std::max(0L,requested),source.data.size()-source.offset);
+    if(n)memcpy(buffer,source.data.data()+source.offset,n);
+    source.offset+=n;*copied=(LONG)n;return 0;
+}
+void renderConversation(bool force){
+    RichDocument doc;
+    if(chats.empty())return;
+    const auto& turns=chats[selectedChat].turns;size_t first=turns.size()>30?turns.size()-30:0;
+    if(first)doc.add(L"Đang hiển thị 30 lượt gần nhất. Sao chép để lấy toàn bộ hội thoại.\n\n",TextStyle::Muted);
+    for(size_t i=first;i<turns.size();++i){const Turn& t=turns[i];
+        doc.add(L"Bạn  ",TextStyle::Heading2);doc.add(wide(t.time)+L"  ",TextStyle::Muted);
+        if(t.state!="pending")doc.action(L"[ Sửa & gửi lại ]",1,i);
+        doc.add(L"\n");doc.add(normalizeLines(wide(t.question)));doc.add(L"\n");
+        if(!t.image.empty()){doc.action(L"[ Xem ảnh đính kèm ]",2,i);doc.add(L"\n");}
+        doc.add(L"\nGemini",TextStyle::Heading2);if(!t.model.empty())doc.add(L"  "+wide(t.model),TextStyle::Muted);doc.add(L"\n");
+        if(t.state=="pending")doc.add(L"Đang xử lý…\n",TextStyle::Muted);
+        else if(t.state=="error")doc.add(normalizeLines(wide(t.answer)),TextStyle::Body);
+        else markdown(doc,wide(t.answer),i);
+        if(t.state!="pending"){
+            doc.add(L"\n");doc.action(t.state=="ok"?L"[ Tạo trả lời khác ]":L"[ Thử lại ]",3,i);
+            if(t.replies.size()>1){
+                doc.add(L"  ");if(t.replyIndex>0)doc.action(L"[ ‹ Trước ]",4,i);
+                doc.add(L"  "+std::to_wstring(t.replyIndex+1)+L" / "+std::to_wstring(t.replies.size())+L"  ",TextStyle::Muted);
+                if(t.replyIndex+1<t.replies.size())doc.action(L"[ Sau › ]",5,i);
+            }
+        }
+        doc.add(L"\n\n");
+    }
+    string rtf=documentRtf(doc);RtfInput input(rtf);EDITSTREAM stream{};stream.dwCookie=(DWORD_PTR)&input;stream.pfnCallback=readRtf;
+    CHARRANGE selection{};POINT scroll{};SendMessageW(outputEdit,EM_EXGETSEL,0,(LPARAM)&selection);SendMessageW(outputEdit,EM_GETSCROLLPOS,0,(LPARAM)&scroll);
+    SCROLLINFO si{};si.cbSize=sizeof(si);si.fMask=SIF_ALL;
+    bool follow=force||(!GetScrollInfo(outputEdit,SB_VERT,&si)||si.nPos+(int)si.nPage>=si.nMax-2);
+    if(!force&&selection.cpMin!=selection.cpMax)follow=false;
+    bool visible=IsWindowVisible(outputEdit)!=FALSE;if(visible)SendMessageW(outputEdit,WM_SETREDRAW,FALSE,0);
+    SendMessageW(outputEdit,EM_STREAMIN,SF_RTF,(LPARAM)&stream);textActions=std::move(doc.actions);
+    for(const auto& a:textActions){CHARRANGE range{a.first,a.last};SendMessageW(outputEdit,EM_EXSETSEL,0,(LPARAM)&range);CHARFORMAT2W format{};format.cbSize=sizeof(format);format.dwMask=CFM_LINK;format.dwEffects=CFE_LINK;SendMessageW(outputEdit,EM_SETCHARFORMAT,SCF_SELECTION,(LPARAM)&format);}
+    if(follow){selectOutputEnd();SendMessageW(outputEdit,EM_SCROLLCARET,0,0);}
+    else{SendMessageW(outputEdit,EM_EXSETSEL,0,(LPARAM)&selection);SendMessageW(outputEdit,EM_SETSCROLLPOS,0,(LPARAM)&scroll);}
+    outputEndsWithCR=false;
+    if(visible){SendMessageW(outputEdit,WM_SETREDRAW,TRUE,0);RedrawWindow(outputEdit,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_FRAME);}
+    updateBottom();
+    if(stream.dwError)throw std::runtime_error("Không hiển thị được nội dung Markdown.");
+}
+
+void displayLive(wstring delta,bool reset){
+    if(reset){if(liveStarted)renderConversation(false);delta=L"Đang nhận:\n"+delta;}
+    if(!delta.empty()){appendOutput(delta);liveStarted=true;}
+}
+void showHistory(bool follow=true){
+    if(follow)unreadUpdates=0;
+    renderConversation(follow);
+    syncingPrompt=true;SetWindowTextW(promptEdit,wide(chats[selectedChat].draft).c_str());syncingPrompt=false;
+    SetWindowTextW(GetDlgItem(mainWnd,REPLYLABEL),wide(chats[selectedChat].title).c_str());
+    updateEmptyUI();refreshAttachment();
+}
+
+struct Job {
+    string key,model,prompt,originalDraft,originalImage,image,chatId,answer,error,actualModel,actualVersion,lastGood;
+    size_t turnIndex=0;
+    bool list=false,fast=true,complete=false,ok=false,retrying=false;
+    ULONGLONG modelsFetchedAt=0;
+    std::vector<Turn> context;
+    std::vector<string> names;
+    json content;
+    HANDLE cancel=CreateEventW(nullptr,TRUE,FALSE,nullptr);
+    CRITICAL_SECTION lock;
+    wstring progress,live,pending;
+    bool dirty=false,resetPending=false;
+    unsigned revision=0;
+    Job(){InitializeCriticalSection(&lock);}
+    ~Job(){if(!key.empty())SecureZeroMemory(&key[0],key.size());if(cancel)CloseHandle(cancel);DeleteCriticalSection(&lock);}
+    void publish(const wstring& note,const wstring& text){
+        wstring a=note,b=text,c=text;EnterCriticalSection(&lock);
+        progress.swap(a);live.swap(b);pending.swap(c);dirty=true;resetPending=true;++revision;LeaveCriticalSection(&lock);
+    }
+    void publishDelta(const wstring& text){
+        if(text.empty())return;
+        EnterCriticalSection(&lock);
+        try{live+=text;pending+=text;dirty=true;++revision;LeaveCriticalSection(&lock);}
+        catch(...){LeaveCriticalSection(&lock);throw;}
+    }
+    bool drain(wstring& note,wstring& delta,bool& reset){
+        EnterCriticalSection(&lock);
+        if(!dirty){LeaveCriticalSection(&lock);return false;}
+        try{note=progress;delta.clear();delta.swap(pending);reset=resetPending;dirty=false;resetPending=false;LeaveCriticalSection(&lock);return true;}
+        catch(...){LeaveCriticalSection(&lock);throw;}
+    }
+    void snapshot(wstring& note,wstring& text,unsigned& v){
+        EnterCriticalSection(&lock);
+        try{note=progress;text=live;v=revision;LeaveCriticalSection(&lock);}
+        catch(...){LeaveCriticalSection(&lock);throw;}
+    }
+};
+std::unique_ptr<Job> job;
+string cacheKey,lastGoodModel;
+bool lastFast=true;
+std::vector<string> cachedModels;
+ULONGLONG cacheTime=0;
+void checkCancel(Job& j){if(WaitForSingleObject(j.cancel,0)==WAIT_OBJECT_0)throw std::runtime_error("Đã dừng yêu cầu.");}
+struct Internet {
+    HINTERNET h;
+    explicit Internet(HINTERNET p):h(p){if(!h)throw winError("WinHTTP");}
+    ~Internet(){WinHttpCloseHandle(h);}
+    Internet(const Internet&)=delete;Internet& operator=(const Internet&)=delete;
+};
+struct Client {
+    std::unique_ptr<Internet> session,connection;
+    Client(){
+        HINTERNET h=WinHttpOpen(L"GeminiDesktop/14",4,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0);
+        if(!h)h=WinHttpOpen(L"GeminiDesktop/14",WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,WINHTTP_NO_PROXY_NAME,WINHTTP_NO_PROXY_BYPASS,0);
+        session.reset(new Internet(h));
+        if(!WinHttpSetTimeouts(h,15000,15000,30000,60000))throw winError("WinHTTP timeout");
+        connection.reset(new Internet(WinHttpConnect(h,L"generativelanguage.googleapis.com",INTERNET_DEFAULT_HTTPS_PORT,0)));
+    }
+};
+std::unique_ptr<Client> client;
+struct HttpReply {DWORD code=0;string body;bool streamed=false;};
+HttpReply http(Job& j,const wchar_t* method,const wstring& path,const string& body={},const std::function<void(const string&)>& onData={}){
+    checkCancel(j);if(!client)client.reset(new Client);
+    Internet request(WinHttpOpenRequest(client->connection->h,method,path.c_str(),nullptr,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_SECURE));
+    DWORD policy=WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+    if(!WinHttpSetOption(request.h,WINHTTP_OPTION_REDIRECT_POLICY,&policy,sizeof(policy)))throw winError("HTTPS redirect policy");
+    wstring headers=L"Content-Type: application/json; charset=utf-8\r\nx-goog-api-key: "+wide(j.key)+L"\r\n";
+    if(!WinHttpSendRequest(request.h,headers.c_str(),(DWORD)-1,body.empty()?WINHTTP_NO_REQUEST_DATA:(LPVOID)body.data(),(DWORD)body.size(),(DWORD)body.size(),0))throw winError("Không gửi được HTTPS");
+    checkCancel(j);
+    if(!WinHttpReceiveResponse(request.h,nullptr))throw winError("Không nhận được HTTPS; kiểm tra mạng hoặc proxy");
+    HttpReply r;DWORD n=sizeof(r.code);
+    if(!WinHttpQueryHeaders(request.h,WINHTTP_QUERY_STATUS_CODE|WINHTTP_QUERY_FLAG_NUMBER,WINHTTP_HEADER_NAME_BY_INDEX,&r.code,&n,WINHTTP_NO_HEADER_INDEX))throw winError("Không đọc được HTTP status");
+    wchar_t contentType[256]{};n=sizeof(contentType);
+    WinHttpQueryHeaders(request.h,WINHTTP_QUERY_CONTENT_TYPE,WINHTTP_HEADER_NAME_BY_INDEX,contentType,&n,WINHTTP_NO_HEADER_INDEX);
+    r.streamed=onData && r.code>=200 && r.code<300 && lowerText(contentType).find(L"text/event-stream")!=wstring::npos;
+    char buffer[8192];DWORD got=0;size_t total=0;ULONGLONG deadline=GetTickCount64()+180000;
+    for(;;){
+        checkCancel(j);if(GetTickCount64()>deadline)throw std::runtime_error("Phản hồi vượt thời gian cho phép.");
+        if(!WinHttpReadData(request.h,buffer,sizeof(buffer),&got))throw winError("Mất kết nối khi đọc phản hồi");
+        checkCancel(j);
+        if(!got)break;
+        total+=got;if(total>MAX_RESPONSE)throw std::runtime_error("Phản hồi quá lớn.");
+        if(r.streamed)onData(string(buffer,got));else r.body.append(buffer,got);
+    }
+    return r;
+}
+string apiError(const HttpReply& r){
+    string message;
+    try{message=json::parse(r.body).at("error").value("message",string());}catch(...){message="Phản hồi không phải JSON lỗi hợp lệ.";}
+    if(r.code==429)message+="\nĐã chạm quota/rate limit. Kiểm tra hạn mức API; chương trình không gửi lặp lỗi này.";
+    if(r.code==401||r.code==403)message+="\nKiểm tra API key và quyền sử dụng Gemini API.";
+    return "HTTP "+std::to_string(r.code)+"\n"+message;
+}
+string urlEncode(const string& s){
+    const char* hex="0123456789ABCDEF";string out;
+    for(unsigned char c:s){
+        if((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'||c=='~')out+=(char)c;
+        else{out+='%';out+=hex[c>>4];out+=hex[c&15];}
+    }return out;
+}
+bool textModel(const string& s){
+    if(!validIdentifier(s)||s.compare(0,7,"gemini-")!=0)return false;
+    for(const char* skip:{"image","tts","audio","live","robotics","computer-use","deep-research","embedding"})if(s.find(skip)!=string::npos)return false;
+    return true;
+}
+std::vector<string> loadModels(Job& j){
+    std::vector<string> names;string token;unsigned pages=0;
+    do{
+        if(++pages>100)throw std::runtime_error("Danh sách model quá dài.");
+        j.publish(L"Đang lấy danh sách model...",L"");
+        auto r=http(j,L"GET",L"/v1beta/models?pageSize=1000"+(token.empty()?wstring():L"&pageToken="+wide(urlEncode(token))));
+        if(r.code<200||r.code>=300)throw std::runtime_error(apiError(r));
+        json root=json::parse(r.body);
+        for(const auto& m:root.at("models")){
+            string name=m.value("name",string());if(name.compare(0,7,"models/")==0)name.erase(0,7);
+            bool supported=false;
+            if(m.contains("supportedGenerationMethods"))for(const auto& a:m.at("supportedGenerationMethods"))if(a=="generateContent")supported=true;
+            if(supported&&textModel(name))names.push_back(name);
+        }
+        string next=root.value("nextPageToken",string());
+        if(!next.empty()&&next==token)throw std::runtime_error("API lặp page token.");
+        token=next;
+    }while(!token.empty());
+    std::sort(names.begin(),names.end());names.erase(std::unique(names.begin(),names.end()),names.end());
+    if(names.empty())throw std::runtime_error("Không có model Gemini văn bản khả dụng cho key này.");
+    j.modelsFetchedAt=GetTickCount64();
+    return names;
+}
+int rankModel(const string& name,bool fast){
+    bool flash=name.find("flash")!=string::npos,lite=name.find("lite")!=string::npos;
+    int rank=flash?(fast?(lite?0:10):(lite?10:0)):100;
+    if(name.find("preview")!=string::npos||name.find("exp")!=string::npos)rank+=30;
+    if(name.find("latest")!=string::npos)rank+=20;
+    return rank;
+}
+std::vector<string> choicesFor(Job& j){
+    if(j.model!="AUTO")return {j.model};
+    // Reuse the last successful model in this key/mode session without a discovery round trip.
+    if(j.names.empty()&&textModel(j.lastGood))return {j.lastGood};
+    if(j.names.empty())j.names=loadModels(j);
+    auto names=j.names;
+    std::sort(names.begin(),names.end(),[&](const string& a,const string& b){int x=rankModel(a,j.fast),y=rankModel(b,j.fast);return x!=y?x<y:a>b;});
+    std::vector<string> result;
+    if(!j.lastGood.empty()&&std::find(names.begin(),names.end(),j.lastGood)!=names.end())result.push_back(j.lastGood);
+    for(const auto& name:names)if(name.find("flash")!=string::npos&&std::find(result.begin(),result.end(),name)==result.end())result.push_back(name);
+    if(result.empty())throw std::runtime_error("AUTO không tìm thấy model Flash. Hãy chọn model thủ công.");
+    if(result.size()>2)result.resize(2);
+    return result;
+}
+struct StreamState {
+    string text,finish,version,block;
+    json parts=arrayJson();int thoughts=0,media=0,tools=0;
+    void consume(const json& root){
+        if(root.type==json::Array){for(const auto& chunk:root)consume(chunk);return;}
+        if(root.type!=json::Object)throw std::runtime_error("API trả dữ liệu không đúng định dạng.");
+        if(root.contains("error"))throw std::runtime_error(root.at("error").value("message",string("Lỗi stream API")));
+        string v=root.value("modelVersion",string());if(!v.empty())version=v;
+        if(root.contains("promptFeedback")){
+            string reason=root.at("promptFeedback").value("blockReason",string());
+            if(!reason.empty()&&reason!="BLOCK_REASON_UNSPECIFIED")block=reason;
+        }
+        if(!root.contains("candidates"))return;
+        for(const auto& c:root.at("candidates")){
+            if(c.contains("index")&&c.at("index").type==json::Number&&c.at("index").text!="0")continue;
+            string reason=c.value("finishReason",string());if(!reason.empty())finish=reason;
+            if(c.contains("content")&&c.at("content").contains("parts"))for(const auto& p:c.at("content").at("parts")){
+                parts.array.push_back(p);bool thought=p.value("thought",false);
+                if(thought)++thoughts;
+                if(!thought && p.contains("text") && p.at("text").type==json::String)text+=p.at("text").str();
+                if(p.contains("inlineData")||p.contains("fileData"))++media;
+                if(p.contains("functionCall"))++tools;
+            }
+            break;
+        }
+    }
+    bool hasText()const{return text.find_first_not_of(" \t\r\n")!=string::npos;}
+    bool success()const{return hasText()&&finish=="STOP"&&block.empty()&&!media&&!tools;}
+    bool retryable()const{return !hasText()&&block.empty()&&!media&&!tools&&(finish=="STOP"||finish=="MAX_TOKENS");}
+    string diagnostic()const{return "finishReason="+finish+", block="+block+", thought="+std::to_string(thoughts)+", media="+std::to_string(media)+", functionCall="+std::to_string(tools);}
+    json content()const{json c=objectJson();c.object["role"]=stringJson("model");c.object["parts"]=parts;return c;}
+};
+struct SseReader {
+    string pending,data;std::function<void(const json&)> receive;
+    bool skipLf=false,firstLine=true;
+    explicit SseReader(const std::function<void(const json&)>& f):receive(f){}
+    void dispatch(){if(!data.empty()&&data!="[DONE]")receive(json::parse(data));data.clear();}
+    void line(string s){
+        if(firstLine){
+            firstLine=false;
+            if(s.size()>=3&&s.compare(0,3,"\xEF\xBB\xBF")==0)s.erase(0,3);
+        }
+        if(s.empty()){dispatch();return;}
+        if(s.compare(0,5,"data:")==0){size_t start=s.size()>5&&s[5]==' '?6:5;if(!data.empty())data+='\n';data+=s.substr(start);}
+    }
+    void feed(const string& bytes){
+        for(char c:bytes){
+            if(skipLf){skipLf=false;if(c=='\n')continue;}
+            if(c=='\r'||c=='\n'){line(pending);pending.clear();skipLf=c=='\r';}
+            else pending+=c;
+            if(pending.size()+data.size()>8*1024*1024)throw std::runtime_error("SSE event quá lớn.");
+        }
+    }
+    void end(){if(!pending.empty())line(pending);pending.clear();dispatch();}
+};
+string requestBody(const Job& j,const string& model,bool retry,const string& version){
+    std::vector<string> previous;size_t bytes=0;
+    for(auto it=j.context.rbegin();it!=j.context.rend()&&previous.size()<6;++it){
+        if(it->state!="ok")continue;
+        string user=dumpJson(textContent("user",it->question));
+        string assistant=it->model==model && it->content.type==json::Object?dumpJson(it->content):dumpJson(textContent("model",it->answer));
+        size_t cost=user.size()+assistant.size();
+        if(bytes+cost>60000 && (!previous.empty()||cost>1024*1024))break;
+        previous.push_back(user+","+assistant);bytes+=cost;
+    }
+    string contents="[";
+    for(auto it=previous.rbegin();it!=previous.rend();++it){contents+=*it;contents+=',';}
+    string prompt=j.prompt;if(retry)prompt+="\nHãy trả lời bằng văn bản; nếu thiếu thông tin hãy nêu rõ.";
+    contents+="{\"role\":\"user\",\"parts\":[{\"text\":"+quoteJson(prompt)+"}";
+    if(!j.image.empty())contents+=",{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":"+quoteJson(j.image)+"}}";
+    contents+="]}]";
+    json config=objectJson(),modalities=arrayJson();modalities.array.push_back(stringJson("TEXT"));
+    config.object["responseModalities"]=modalities;
+    string known=version.empty()?model:version;
+    if(j.fast||retry||known.compare(0,8,"gemini-4")==0){
+        json thinking=objectJson();
+        if(known.compare(0,16,"gemini-2.5-flash")==0)thinking=json::parse("{\"thinkingBudget\":0,\"includeThoughts\":false}");
+        else if(known.compare(0,8,"gemini-3")==0||known.compare(0,8,"gemini-4")==0)thinking=json::parse("{\"thinkingLevel\":\"LOW\",\"includeThoughts\":false}");
+        if(!j.fast&&!retry&&known.compare(0,8,"gemini-4")==0)thinking.object["thinkingLevel"]=stringJson("MEDIUM");
+        if(!thinking.object.empty())config.object["thinkingConfig"]=thinking;
+    }
+    string body="{\"contents\":"+contents+",\"generationConfig\":"+dumpJson(config)+"}";
+    if(body.size()>18*1024*1024)throw std::runtime_error("Nội dung quá lớn. Hãy dùng chat mới hoặc chụp vùng nhỏ hơn.");
+    return body;
+}
+void generate(Job& j){
+    auto choices=choicesFor(j);bool automatic=j.model=="AUTO",refreshed=false,retry=false;
+    size_t choice=0;string version,last;
+    for(int total=0;total<4 && choice<choices.size();++total){
+        checkCancel(j);string model=choices[choice];j.actualModel=model;
+        wstring note=L"Model: "+wide(model)+(retry?L" — thử lại...":L" — đang trả lời...");
+        j.publish(note,L"");StreamState state;ULONGLONG notified=0;size_t publishedBytes=0;
+        auto publishNew=[&](){
+            if(state.text.size()>publishedBytes){j.publishDelta(wide(state.text.substr(publishedBytes)));publishedBytes=state.text.size();}
+        };
+        SseReader sse([&](const json& chunk){
+            state.consume(chunk);
+            ULONGLONG now=GetTickCount64();
+            if(publishedBytes==0||now-notified>=40){publishNew();notified=now;}
+        });
+        HttpReply response;
+        try{
+            response=http(j,L"POST",L"/v1beta/models/"+wide(model)+L":streamGenerateContent?alt=sse",requestBody(j,model,retry,version),[&](const string& b){sse.feed(b);});
+            if(response.code>=200&&response.code<300){if(response.streamed)sse.end();else state.consume(json::parse(response.body));publishNew();}
+        }catch(const std::exception& e){
+            client.reset();
+            if(!state.hasText())throw;
+            j.answer=state.text+"\n\n[Phản hồi bị gián đoạn: "+string(e.what())+"]";j.complete=false;j.content=state.content();return;
+        }
+        if(response.code<200||response.code>=300){
+            last=apiError(response);
+            if(response.code==404 && automatic && !refreshed){j.names=loadModels(j);j.lastGood.clear();choices=choicesFor(j);choice=0;refreshed=true;retry=false;version.clear();continue;}
+            bool temporary=response.code==500||response.code==502||response.code==503||response.code==504;
+            if(!temporary && !(response.code==404&&automatic))throw std::runtime_error(last);
+        }else{
+            version=state.version;j.actualVersion=version;
+            if(state.hasText()){
+                j.answer=state.text;j.complete=state.success();j.content=state.content();
+                if(!j.complete)j.answer+="\n\n[Phản hồi chưa đầy đủ: "+state.diagnostic()+"]";
+                return;
+            }
+            last="API không trả văn bản. Model: "+model+"\n"+state.diagnostic();
+            if(!state.retryable())throw std::runtime_error(last);
+        }
+        if(retry || response.code==404){++choice;retry=false;version.clear();}else retry=true;
+        if(choice>=choices.size()&&automatic&&!refreshed&&j.names.empty()&&total<3){
+            j.names=loadModels(j);j.lastGood.clear();choices=choicesFor(j);
+            choices.erase(std::remove(choices.begin(),choices.end(),model),choices.end());
+            choice=0;refreshed=true;version.clear();
+        }
+        if(choice<choices.size() && total<3 && WaitForSingleObject(j.cancel,800)==WAIT_OBJECT_0)checkCancel(j);
+    }
+    throw std::runtime_error(last+"\nĐã dừng sau số lần thử giới hạn.");
+}
+unsigned __stdcall runJob(void* ptr){
+    Job& j=*static_cast<Job*>(ptr);
+    try{
+        if(j.list){j.names=loadModels(j);j.publish(L"Đã cập nhật danh sách model.",L"");}
+        else generate(j);
+        j.ok=true;
+    }catch(const std::exception& e){
+        client.reset();
+        j.error=WaitForSingleObject(j.cancel,0)==WAIT_OBJECT_0?"Đã dừng yêu cầu.":e.what();
+    }catch(...){j.error="Lỗi không xác định.";}
+    for(string* value:{&j.answer,&j.error})for(size_t p=0;!j.key.empty()&&(p=value->find(j.key,p))!=string::npos;p+=9)value->replace(p,j.key.size(),"[API KEY]");
+    if(!j.key.empty())SecureZeroMemory(&j.key[0],j.key.size());
+    j.key.clear();return 0;
+}
+
+void showWindow(){ShowWindow(mainWnd,SW_RESTORE);SetForegroundWindow(mainWnd);}
+bool addTray(){
+    tray={};tray.cbSize=sizeof(tray);tray.hWnd=mainWnd;tray.uID=1;
+    tray.uFlags=NIF_MESSAGE|NIF_ICON|NIF_TIP;tray.uCallbackMessage=WM_TRAY;
+    tray.hIcon=LoadIconW(nullptr,IDI_APPLICATION);lstrcpynW(tray.szTip,L"Gemini Desktop — nhấp đúp để mở",128);
+    trayAdded=Shell_NotifyIconW(NIM_ADD,&tray)!=FALSE;
+    if(trayAdded){tray.uVersion=NOTIFYICON_VERSION_4;Shell_NotifyIconW(NIM_SETVERSION,&tray);}
+    return trayAdded;
+}
+void hideToTray(){
+    saveQuiet();
+    if(!trayAdded&&!addTray()){status(L"Không tạo được biểu tượng khay. Cửa sổ vẫn mở để bạn điều khiển.");return;}
+    ShowWindow(mainWnd,SW_HIDE);
+}
+void requestExit(){
+    if(closePending)return;
+    if(archiveBusy){closePending=true;cancelArchive();showWindow();status(L"Đang hủy sao lưu/khôi phục trước khi thoát…");return;}
+    if(busy){closePending=true;SetEvent(job->cancel);showWindow();status(L"Đang thoát: chờ tác vụ mạng kết thúc hoặc hết timeout...");}
+    else{
+        saveQuiet();
+        if(historyWarning.empty())DestroyWindow(mainWnd);
+        else{
+            showWindow();
+            if(MessageBoxW(mainWnd,(historyWarning+L"\nThoát mà không lưu các thay đổi mới nhất? Chọn No để giữ ứng dụng mở.").c_str(),L"Chưa lưu xong",MB_YESNO|MB_DEFBUTTON2|MB_ICONWARNING)==IDYES)DestroyWindow(mainWnd);
+        }
+    }
+}
+void setBusy(bool value){
+    busy=value;bool locked=busy||archiveBusy;
+    for(int id:{API,PROMPT,SEND,CLIP,SHOT,CLEAR,PASTE_KEY,MODEL,MODELS,FORGET_KEY,REGION,CHATS,NEWCHAT,DELETECHAT,FAST,SEARCH,ATTACH,REMOVEIMAGE,CANCELEDIT,EXPORTCHAT,IMPORTCHAT})
+        EnableWindow(GetDlgItem(mainWnd,id),!locked);
+    EnableWindow(GetDlgItem(mainWnd,STOP),locked);
+    for(int id:{SETTINGS,FOLDER,PROTECT,PIN})EnableWindow(GetDlgItem(mainWnd,id),!archiveBusy);
+    for(int id:{SUGGEST1,SUGGEST2,SUGGEST3})EnableWindow(GetDlgItem(mainWnd,id),!locked);
+    SetWindowTextW(GetDlgItem(mainWnd,SEND),archiveBusy?L"Đang lưu":value?L"Đang gửi":L"Gửi  ↑");
+}
+void startArchive(bool importing){
+    if(busy||archiveBusy||closePending)return;
+    if(importing&&!historyWritable)throw std::runtime_error("Lịch sử chưa ghi được; hãy xử lý lỗi lưu trước khi khôi phục.");
+    wchar_t path[32768]{};if(!importing)lstrcpyW(path,L"Gemini-Backup.gdesk");
+    OPENFILENAMEW dialog{};dialog.lStructSize=sizeof(dialog);dialog.hwndOwner=mainWnd;
+    dialog.lpstrFilter=L"Sao lưu Gemini Desk (*.gdesk)\0*.gdesk\0\0";dialog.lpstrDefExt=L"gdesk";dialog.lpstrFile=path;dialog.nMaxFile=32768;
+    dialog.Flags=OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR|(importing?OFN_FILEMUSTEXIST:OFN_OVERWRITEPROMPT);
+    BOOL chosen=importing?GetOpenFileNameW(&dialog):GetSaveFileNameW(&dialog);
+    if(!chosen){if(CommDlgExtendedError())throw std::runtime_error("Không mở được hộp chọn bản sao lưu.");return;}
+    if(!uiReady||busy||archiveBusy||closePending)return;
+    wstring filename=path;if(!importing&&(filename.size()<6||_wcsicmp(filename.c_str()+filename.size()-6,L".gdesk")))throw std::runtime_error("Hãy lưu với phần mở rộng .gdesk.");
+    std::unique_ptr<ArchiveTask> task(new ArchiveTask);if(!task->cancel)throw winError("Không tạo được tác vụ sao lưu");
+    task->importing=importing;task->path=filename;if(!importing)task->history=historyJson();
+    archiveTask=std::move(task);archiveBusy=true;setBusy(false);KillTimer(mainWnd,2);
+    if(!SetTimer(mainWnd,5,100,nullptr)){archiveBusy=false;archiveTask.reset();setBusy(false);throw winError("Không tạo được timer sao lưu");}
+    archiveThread=(HANDLE)_beginthreadex(nullptr,0,runArchive,archiveTask.get(),0,nullptr);
+    if(!archiveThread){KillTimer(mainWnd,5);archiveBusy=false;archiveTask.reset();setBusy(false);throw winError("Không tạo được luồng sao lưu");}
+    status(importing?L"Đang kiểm tra và nhập bản sao lưu… Lịch sử hiện có được giữ nguyên.":L"Đang sao lưu lịch sử và ảnh… Bấm Dừng để hủy.");
+}
+void finishArchive(){
+    CloseHandle(archiveThread);archiveThread=nullptr;KillTimer(mainWnd,5);
+    bool imported=archiveTask->importing;size_t count=archiveTask->imported.chats.size();
+    if(imported&&archiveTask->ok){
+        try{
+            archiveCheck(*archiveTask);
+            mergeImportedHistory(archiveTask->imported,[](){saveHistory();});historyWarning.clear();archiveTask->createdImages.clear();
+        }catch(const std::exception& e){archiveTask->ok=false;archiveTask->error=e.what();removeImportedImages(*archiveTask);}
+    }
+    bool ok=archiveTask->ok;wstring message=ok?(imported?L"Đã khôi phục thêm "+std::to_wstring(count)+L" cuộc trò chuyện; lịch sử cũ được giữ nguyên.":L"Đã lưu bản sao lưu .gdesk gồm lịch sử và ảnh; không chứa API key."):L"[Lỗi] "+wide(archiveTask->error);
+    archiveTask.reset();archiveBusy=false;setBusy(false);
+    if(ok&&imported){SetWindowTextW(GetDlgItem(mainWnd,SEARCH),L"");refreshChats();showHistory();}
+    if(!SetTimer(mainWnd,2,800,nullptr))saveQuiet();
+    status(message);if(closePending){closePending=false;requestExit();}
+}
+string checkedKey(){
+    string key=trim(utf8(readText(apiEdit)));
+    if(!validIdentifier(key)){revealSettings();throw std::runtime_error("Nhập API key hợp lệ trong Cài đặt trước khi gửi.");}
+    return key;
+}
+void applyJobResult(const Job& result){
+    if(result.list)return;
+    for(auto& c:chats)if(c.id==result.chatId&&result.turnIndex<c.turns.size()){
+        Turn& t=c.turns[result.turnIndex];t.model=result.actualModel;t.content=result.content;
+        t.answer=result.ok?result.answer:result.error;
+        t.state=result.ok?(result.complete?"ok":"partial"):"error";
+        if(result.retrying||!t.replies.empty())rememberReply(t);
+        if(!result.retrying&&(!result.ok||!result.complete)&&c.draft.empty()){c.draft=result.originalDraft;c.draftImage=result.originalImage;}
+        break;
+    }
+}
+void updateModelCache(const Job& result){
+    if(result.modelsFetchedAt&&!result.names.empty()){
+        cachedModels=result.names;cacheTime=result.modelsFetchedAt;
+    }
+}
+void finishJob(){
+    if(worker)CloseHandle(worker);
+    worker=nullptr;KillTimer(mainWnd,1);
+    if(job->modelsFetchedAt&&!job->names.empty()){
+        updateModelCache(*job);wstring current=readText(modelCombo);
+        SendMessageW(modelCombo,CB_RESETCONTENT,0,0);SendMessageW(modelCombo,CB_ADDSTRING,0,(LPARAM)L"AUTO");
+        for(const auto& name:cachedModels)SendMessageW(modelCombo,CB_ADDSTRING,0,(LPARAM)wide(name).c_str());
+        SetWindowTextW(modelCombo,current.c_str());
+    }
+    if(!job->list){
+        if(!outputAtBottom()&&unreadUpdates<1000000)++unreadUpdates;
+        applyJobResult(*job);
+        if(job->ok&&job->complete){lastGoodModel=job->actualModel;lastFast=job->fast;}
+        refreshChats();showHistory(false);
+    }
+    wstring message=job->ok?(job->list?L"Đã tải danh sách model.":job->complete?L"Hoàn tất.":L"Chỉ nhận được một phần câu trả lời; xem thông báo trong lịch sử."):L"[Lỗi] "+wide(job->error);
+    job.reset();setBusy(false);saveQuiet();status(historyWarning.empty()?message:historyWarning);
+    if(closePending){
+        closePending=false;
+        requestExit();
+    }
+}
+void prepareConversation(Job& next,const std::function<void()>& persist){
+        size_t sourceIndex=selectedChat;int editIndex=chats[sourceIndex].editIndex;
+        string sourceDraft=chats[sourceIndex].draft,sourceImage=chats[sourceIndex].draftImage;
+        bool forked=editIndex>=0;
+        if(forked){Chat branch=editedBranch(chats[sourceIndex],(size_t)editIndex);chats.push_back(std::move(branch));selectedChat=chats.size()-1;}
+        Chat& c=chats[selectedChat];next.chatId=c.id;next.turnIndex=c.turns.size();
+        string oldTitle=c.title,oldDraft=c.draft,oldImage=c.draftImage;int oldEdit=c.editIndex;bool pushed=false;
+        try{
+            for(auto it=c.turns.rbegin();it!=c.turns.rend()&&next.context.size()<6;++it)if(it->state=="ok")next.context.push_back(contextTurn(*it));
+            std::reverse(next.context.begin(),next.context.end());
+            Turn t;t.question=next.prompt;t.image=next.originalImage;t.time=nowText();
+            if(c.turns.empty()){
+                wstring title=wide(next.prompt);if(title.size()>45)title.resize(45);
+                if(!title.empty()&&title.back()>=0xD800&&title.back()<=0xDBFF)title.pop_back();
+                c.title=utf8(title);
+            }
+            c.turns.push_back(std::move(t));pushed=true;c.draft.clear();c.draftImage.clear();c.editIndex=-1;
+            if(forked){chats[sourceIndex].draft.clear();chats[sourceIndex].draftImage.clear();chats[sourceIndex].editIndex=-1;}
+            persist();
+        }catch(...){
+            if(pushed)c.turns.pop_back();
+            c.title=oldTitle;c.draft=oldDraft;c.draftImage=oldImage;c.editIndex=oldEdit;
+            if(forked){chats.pop_back();selectedChat=sourceIndex;chats[sourceIndex].draft=sourceDraft;chats[sourceIndex].draftImage=sourceImage;chats[sourceIndex].editIndex=editIndex;}
+            throw;
+        }
+}
+
+// Retrying an earlier turn creates a branch. Later context and drafts stay in the source chat.
+void prepareRetry(Job& next,size_t index,const std::function<void()>& persist){
+    size_t source=selectedChat;if(index>=chats[source].turns.size())throw std::runtime_error("Câu hỏi không còn tồn tại.");
+    Turn previous=chats[source].turns[index];
+    bool branch=index+1<chats[source].turns.size();
+    if(branch){Chat c;c.id=newId();c.title=chats[source].title+" · trả lời lại";c.turns.assign(chats[source].turns.begin(),chats[source].turns.begin()+index+1);chats.push_back(std::move(c));selectedChat=chats.size()-1;}
+    try{
+        auto& c=chats[selectedChat];auto& t=c.turns[index];
+        if(t.replies.empty())rememberReply(t);
+        for(size_t i=index;i>0&&next.context.size()<6;--i)if(c.turns[i-1].state=="ok")next.context.push_back(contextTurn(c.turns[i-1]));
+        std::reverse(next.context.begin(),next.context.end());
+        next.chatId=c.id;next.turnIndex=index;t.answer.clear();t.model.clear();t.content=json();t.state="pending";persist();
+    }catch(...){if(branch){chats.pop_back();selectedChat=source;}else chats[source].turns[index]=std::move(previous);throw;}
+}
+void changeReply(size_t turn,int direction){
+    if(busy||archiveBusy||closePending||turn>=chats[selectedChat].turns.size())return;
+    const auto& current=chats[selectedChat].turns[turn];
+    if(current.replies.size()<2)return;
+    long long target=(long long)current.replyIndex+direction;
+    if(target<0||target>=(long long)current.replies.size())return;
+    size_t source=selectedChat;bool branch=turn+1<chats[source].turns.size();
+    Turn previous=current;
+    if(branch){Chat c;c.id=newId();c.title=chats[source].title+" · phiên bản";c.turns.assign(chats[source].turns.begin(),chats[source].turns.begin()+turn+1);chats.push_back(std::move(c));selectedChat=chats.size()-1;}
+    try{chooseReply(chats[selectedChat].turns[turn],(size_t)target);saveHistory();historyWarning.clear();}
+    catch(...){if(branch){chats.pop_back();selectedChat=source;}else chats[source].turns[turn]=std::move(previous);throw;}
+    if(branch)SetWindowTextW(GetDlgItem(mainWnd,SEARCH),L"");
+    refreshChats();showHistory(false);status(branch?L"Đã mở nhánh từ phiên bản này; hội thoại cũ được giữ nguyên.":L"Đã chuyển phiên bản trả lời.");
+}
+void start(bool list=false,int retryIndex=-1){
+    if(busy||archiveBusy||closePending)return;
+    std::unique_ptr<Job> next(new Job);
+    if(!next->cancel)throw winError("Không tạo được worker event");
+    next->key=checkedKey();next->list=list;next->retrying=retryIndex>=0;
+    if(next->retrying&&(size_t)retryIndex>=chats[selectedChat].turns.size())throw std::runtime_error("Câu hỏi không còn tồn tại.");
+    next->model=trim(utf8(readText(modelCombo)));
+    if(next->model.compare(0,7,"models/")==0)next->model.erase(0,7);
+    if(next->model.empty())next->model="AUTO";
+    if(!list&&next->model!="AUTO"&&!textModel(next->model))throw std::runtime_error("Chọn AUTO hoặc model Gemini văn bản.");
+    next->fast=SendMessageW(fastCheck,BM_GETCHECK,0,0)==BST_CHECKED;
+    preferredModel=next->model;fastMode=next->fast;
+    if(cacheKey!=next->key){cachedModels.clear();lastGoodModel.clear();cacheTime=0;cacheKey=next->key;}
+    if(GetTickCount64()-cacheTime<15*60*1000)next->names=cachedModels;
+    if(lastFast==next->fast)next->lastGood=lastGoodModel;
+    next->prompt=next->retrying?editableQuestion(chats[selectedChat].turns[(size_t)retryIndex]):utf8(readText(promptEdit));next->originalDraft=next->prompt;
+    if(next->retrying){const auto& t=chats[selectedChat].turns[(size_t)retryIndex];if(t.image.empty()&&next->prompt!=t.question)throw std::runtime_error("Ảnh của lượt chat cũ chưa được lưu. Hãy chọn Sửa & gửi lại rồi đính kèm ảnh.");}
+    if(!list){
+        next->originalImage=next->retrying?chats[selectedChat].turns[(size_t)retryIndex].image:chats[selectedChat].draftImage;
+        if(!next->originalImage.empty()){
+            string png=readFile(imagePath(next->originalImage));
+            if(png.size()>16*1024*1024)throw std::runtime_error("Ảnh đính kèm quá lớn. Hãy chọn lại.");
+            next->image=base64(std::vector<uint8_t>(png.begin(),png.end()));
+        }
+        if(next->prompt.find_first_not_of(" \t\r\n")==string::npos){
+            if(next->image.empty())throw std::runtime_error("Nhập câu hỏi hoặc đính kèm ảnh trước khi gửi.");
+            next->prompt="Hãy đọc và giải thích nội dung ảnh bằng tiếng Việt. Nếu có bài tập, hãy giải từng bước.";
+        }
+        bool branching=next->retrying?(size_t)retryIndex+1<chats[selectedChat].turns.size():chats[selectedChat].editIndex>=0;
+        if(next->retrying)prepareRetry(*next,(size_t)retryIndex,[](){saveHistory();historyWarning.clear();});
+        else prepareConversation(*next,[](){saveHistory();historyWarning.clear();});
+        KillTimer(mainWnd,2);
+        if(branching)SetWindowTextW(GetDlgItem(mainWnd,SEARCH),L"");
+        refreshChats();showHistory();
+    }
+    secondPoint=false;liveStarted=false;job=std::move(next);setBusy(true);
+    if(!SetTimer(mainWnd,1,50,nullptr)){job->error="Không tạo được UI timer.";finishJob();throw std::runtime_error("Không tạo được UI timer.");}
+    worker=(HANDLE)_beginthreadex(nullptr,0,runJob,job.get(),0,nullptr);
+    if(!worker){job->error="Không tạo được luồng mạng.";finishJob();throw std::runtime_error("Không tạo được luồng mạng.");}
+    status(list?L"Đang tải model...":L"Đang nhận câu trả lời… Markdown được định dạng khi hoàn tất.");
+}
+
+void fullShot(){
+    if(busy||archiveBusy||closePending)return;
+    attachPng(capture(GetSystemMetrics(SM_XVIRTUALSCREEN),GetSystemMetrics(SM_YVIRTUALSCREEN),GetSystemMetrics(SM_CXVIRTUALSCREEN),GetSystemMetrics(SM_CYVIRTUALSCREEN)));
+}
+void regionShot(){
+    if(busy||archiveBusy||closePending)return;
+    if(!secondPoint){if(!GetCursorPos(&firstPoint))throw winError("Vị trí chuột");secondPoint=true;status(L"Đã chọn góc 1. Di chuột đến góc đối diện rồi nhấn Alt+S lần nữa.");return;}
+    POINT end;if(!GetCursorPos(&end))throw winError("Vị trí chuột");secondPoint=false;
+    int w=std::abs(end.x-firstPoint.x),h=std::abs(end.y-firstPoint.y);
+    if(w<15||h<15)throw std::runtime_error("Vùng quá nhỏ; hãy chọn lại.");
+    attachPng(capture(std::min(end.x,firstPoint.x),std::min(end.y,firstPoint.y),w,h));
+}
+void askClipboard(){pasteComposer();}
+void affinity(){
+    bool on=SendMessageW(protectCheck,BM_GETCHECK,0,0)==BST_CHECKED;
+    if(!SetWindowDisplayAffinity(mainWnd,on?WDA_EXCLUDEFROMCAPTURE:WDA_NONE)){
+        DWORD error=GetLastError(),actual=0;
+        if(GetWindowDisplayAffinity(mainWnd,&actual))SendMessageW(protectCheck,BM_SETCHECK,actual?BST_CHECKED:BST_UNCHECKED,0);
+        status(L"Không đổi được chế độ chống chụp. Windows error "+std::to_wstring(error));return;
+    }
+    status(on?L"Đã bật cờ chống chụp cho cửa sổ này; cần kiểm tra thực tế trên Meet.":L"Đã tắt cờ chống chụp.");
+}
+struct UiBox{int x,y,w,h;};
+struct UiGeometry{
+    int w,h,x=280,cw,chatTop,chatBottom,composeTop,extra;
+    explicit UiGeometry(int width,int height):w(width),h(height),cw(width-308),chatTop(settingsOpen?286:100),chatBottom(height-232),composeTop(height-212),extra(!chats.empty()&&(!chats[selectedChat].draftImage.empty()||chats[selectedChat].editIndex>=0)?68:0){chatBottom-=extra;composeTop-=extra;}
+};
+UiGeometry geometry(){RECT r;GetClientRect(mainWnd,&r);return UiGeometry(MulDiv(r.right,96,uiDpi),MulDiv(r.bottom,96,uiDpi));}
+void rounded(HDC dc,RECT r,COLORREF fill,COLORREF border,int radius){
+    HBRUSH brush=CreateSolidBrush(fill);HPEN pen=CreatePen(PS_SOLID,1,border);
+    HGDIOBJ oldBrush=SelectObject(dc,brush),oldPen=SelectObject(dc,pen);
+    RoundRect(dc,r.left,r.top,r.right,r.bottom,px(radius),px(radius));
+    SelectObject(dc,oldBrush);SelectObject(dc,oldPen);DeleteObject(brush);DeleteObject(pen);
+}
+RECT rectPx(int x,int y,int w,int h){RECT r{px(x),px(y),px(x+w),px(y+h)};return r;}
+// Glass-like layers are opaque: no desktop sampling, continuous blur or animation timer.
+void glassCard(HDC dc,RECT r,bool focused=false){
+    RECT shadow=r;OffsetRect(&shadow,0,px(3));
+    rounded(dc,shadow,RGB(218,228,245),RGB(218,228,245),32);
+    rounded(dc,r,RGB(255,255,255),focused?ACCENT:RGB(207,221,244),32);
+    RECT inner=r;InflateRect(&inner,-px(2),-px(2));inner.top+=px(2);
+    rounded(dc,inner,PAPER,PAPER,28);
+}
+void paintSurface(HDC dc){
+    auto g=geometry();RECT r;GetClientRect(mainWnd,&r);FillRect(dc,&r,pageBrush);
+    r.right=px(248);FillRect(dc,&r,sideBrush);
+    r=rectPx(247,0,1,g.h);HBRUSH line=CreateSolidBrush(RGB(255,255,255));FillRect(dc,&r,line);DeleteObject(line);
+    rounded(dc,rectPx(22,27,34,34),ACCENT,RGB(119,163,250),20);
+    HGDIOBJ old=SelectObject(dc,titleFont);SetTextColor(dc,PAPER);SetBkMode(dc,TRANSPARENT);
+    r=rectPx(22,24,34,38);DrawTextW(dc,L"✦",-1,&r,DT_CENTER|DT_SINGLELINE|DT_VCENTER);SelectObject(dc,old);
+    rounded(dc,rectPx(18,170,212,38),PAPER,RGB(255,255,255),24);
+    if(settingsOpen){
+        glassCard(dc,rectPx(g.x,96,g.cw,174));
+        rounded(dc,rectPx(g.x+82,111,g.cw-298,36),PAGE,RGB(218,228,245),18);
+    }
+    glassCard(dc,rectPx(g.x,g.chatTop,g.cw,g.chatBottom-g.chatTop));
+    glassCard(dc,rectPx(g.x,g.composeTop,g.cw,146+g.extra),GetFocus()==promptEdit);
+}
+// Reuse one bounded surface; ordinary repaints only copy the invalid rectangle.
+struct SurfaceCache {
+    HDC dc=nullptr;HBITMAP bitmap=nullptr;HGDIOBJ original=nullptr;
+    int width=0,height=0,viewWidth=0,viewHeight=0;bool dirty=true;
+    void clear(){if(dc&&original)SelectObject(dc,original);if(bitmap)DeleteObject(bitmap);if(dc)DeleteDC(dc);dc=nullptr;bitmap=nullptr;original=nullptr;width=height=viewWidth=viewHeight=0;dirty=true;}
+    bool ensure(HDC target,int w,int h){
+        if(w<=0||h<=0||(uint64_t)w*(uint64_t)h>16*1024*1024){clear();return false;}
+        if(dc&&w<=width&&h<=height){
+            if(viewWidth!=w||viewHeight!=h)dirty=true;
+            viewWidth=w;viewHeight=h;return true;
+        }
+        clear();
+        int capacityW=((w+127)/128)*128,capacityH=((h+127)/128)*128;
+        if((uint64_t)capacityW*capacityH>16*1024*1024){capacityW=w;capacityH=h;}
+        dc=CreateCompatibleDC(target);if(!dc)return false;
+        bitmap=CreateCompatibleBitmap(target,capacityW,capacityH);if(!bitmap){clear();return false;}
+        original=SelectObject(dc,bitmap);if(!original||original==HGDI_ERROR){original=nullptr;clear();return false;}
+        width=capacityW;height=capacityH;viewWidth=w;viewHeight=h;return true;
+    }
+} surfaceCache;
+void paintBuffered(HDC dc,const RECT& update){
+    RECT bounds;GetClientRect(mainWnd,&bounds);
+    if(!surfaceCache.ensure(dc,bounds.right,bounds.bottom)){paintSurface(dc);return;}
+    if(surfaceCache.dirty){paintSurface(surfaceCache.dc);surfaceCache.dirty=false;}
+    if(!BitBlt(dc,update.left,update.top,update.right-update.left,update.bottom-update.top,surfaceCache.dc,update.left,update.top,SRCCOPY))paintSurface(dc);
+}
+void paintSwitch(HWND hwnd,HDC dc){
+    RECT r;GetClientRect(hwnd,&r);FillRect(dc,&r,whiteBrush);
+    bool on=SendMessageW(hwnd,BM_GETCHECK,0,0)==BST_CHECKED,enabled=IsWindowEnabled(hwnd)!=FALSE;
+    COLORREF fill=on?ACCENT:RGB(176,191,216);if(!enabled)fill=RGB(218,227,240);
+    int top=(r.bottom-px(20))/2;RECT track{px(1),top,px(37),top+px(20)};
+    rounded(dc,track,fill,fill,20);
+    RECT knob{on?px(19):px(4),top+px(3),on?px(33):px(18),top+px(17)};
+    rounded(dc,knob,PAPER,PAPER,14);
+    HGDIOBJ old=SelectObject(dc,uiFont);SetBkMode(dc,TRANSPARENT);SetTextColor(dc,enabled?INK:RGB(120,132,154));
+    r.left=px(47);wstring text=readText(hwnd);DrawTextW(dc,text.c_str(),(int)text.size(),&r,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS);
+    if(GetFocus()==hwnd){InflateRect(&r,-1,-2);DrawFocusRect(dc,&r);}SelectObject(dc,old);
+}
+WNDPROC buttonBase=nullptr;
+LRESULT CALLBACK modernButtonProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
+    bool toggle=(GetWindowLongPtrW(hwnd,GWL_STYLE)&BS_TYPEMASK)==BS_AUTOCHECKBOX;
+    if(msg==WM_MOUSEMOVE&&!GetPropW(hwnd,L"GeminiHover")){
+        SetPropW(hwnd,L"GeminiHover",(HANDLE)1);TRACKMOUSEEVENT t{sizeof(t),TME_LEAVE,hwnd,0};TrackMouseEvent(&t);InvalidateRect(hwnd,nullptr,FALSE);
+    }
+    if(msg==WM_MOUSELEAVE){RemovePropW(hwnd,L"GeminiHover");InvalidateRect(hwnd,nullptr,FALSE);}
+    if(msg==WM_NCDESTROY)RemovePropW(hwnd,L"GeminiHover");
+    if(toggle&&msg==WM_ERASEBKGND)return 1;
+    if(toggle&&msg==WM_PAINT){PAINTSTRUCT ps;HDC dc=BeginPaint(hwnd,&ps);paintSwitch(hwnd,dc);EndPaint(hwnd,&ps);return 0;}
+    LRESULT result=CallWindowProcW(buttonBase,hwnd,msg,wp,lp);
+    if(toggle&&(msg==BM_SETCHECK||msg==WM_ENABLE||msg==WM_SETFOCUS||msg==WM_KILLFOCUS))InvalidateRect(hwnd,nullptr,FALSE);
+    return result;
+}
+HWND control(const wchar_t* cls,const wchar_t* text,DWORD style,int id,DWORD ex=0){
+    HWND w=CreateWindowExW(ex,cls,text,WS_CHILD|WS_VISIBLE|style,0,0,1,1,mainWnd,(HMENU)(INT_PTR)id,GetModuleHandleW(nullptr),nullptr);
+    if(!w)throw winError("Không tạo được giao diện");
+    SendMessageW(w,WM_SETFONT,(WPARAM)uiFont,TRUE);
+    if(lstrcmpW(cls,L"BUTTON")==0){if(!buttonBase)buttonBase=(WNDPROC)GetWindowLongPtrW(w,GWLP_WNDPROC);SetWindowLongPtrW(w,GWLP_WNDPROC,(LONG_PTR)modernButtonProc);}
+    return w;
+}
+void updateEmptyUI(){
+    if(!uiReady)return;
+    bool empty=chats[selectedChat].turns.empty();
+    ShowWindow(outputEdit,empty?SW_HIDE:SW_SHOW);
+    auto g=geometry();bool compact=g.chatBottom-g.chatTop<170;
+    ShowWindow(GetDlgItem(mainWnd,EMPTYTITLE),empty?SW_SHOW:SW_HIDE);
+    for(int id:{EMPTYSUB,SUGGEST1,SUGGEST2,SUGGEST3})ShowWindow(GetDlgItem(mainWnd,id),empty&&!compact?SW_SHOW:SW_HIDE);
+}
+std::vector<int> layoutStamp;
+std::map<int,RECT> controlRects;
+RECT outputFormatRect{},promptFormatRect{};
+void layoutUI(){
+    auto g=geometry();int x=g.x,cw=g.cw,h=g.h;
+    std::vector<int> stamp{g.w,g.h,uiDpi,(int)settingsOpen,(int)chats[selectedChat].turns.empty(),(int)!chats[selectedChat].draftImage.empty(),(int)(chats[selectedChat].editIndex>=0)};
+    if(stamp==layoutStamp)return;
+    surfaceCache.dirty=true;
+    bool placed=true;
+    auto put=[&](int id,int a,int b,int c,int d){RECT desired{px(a),px(b),px(a+std::max(c,1)),px(b+std::max(d,1))};
+        auto it=controlRects.find(id);
+        if(it!=controlRects.end()&&EqualRect(&it->second,&desired))return;
+        if(MoveWindow(GetDlgItem(mainWnd,id),desired.left,desired.top,desired.right-desired.left,desired.bottom-desired.top,FALSE))controlRects[id]=desired;
+        else placed=false;};
+    put(BRAND,66,28,166,30);put(SUBTITLE,23,76,208,20);put(NEWCHAT,18,113,212,40);
+    put(SEARCH,30,180,188,22);put(SIDETITLE,23,232,204,20);put(CHATS,12,263,224,h-456);
+    put(CHATINFO,23,h-178,210,24);put(EXPORTCHAT,18,h-143,102,32);put(IMPORTCHAT,128,h-143,102,32);put(DELETECHAT,18,h-103,102,32);put(FOLDER,128,h-103,102,32);put(QUIT,18,h-59,212,34);
+    put(REPLYLABEL,x,28,cw-246,30);put(MODELBADGE,x,65,cw-246,20);put(COPY,x+cw-230,29,110,36);put(SETTINGS,x+cw-110,29,110,36);
+    put(APILABEL,x+18,120,60,22);put(API,x+94,119,cw-322,22);put(PASTE_KEY,x+cw-204,112,96,34);put(FORGET_KEY,x+cw-100,112,84,34);
+    put(MODELLABEL,x+18,168,60,22);put(MODEL,x+82,161,cw-218,240);put(MODELS,x+cw-124,160,108,34);
+    put(PROTECT,x+18,219,248,28);put(PIN,x+280,219,176,28);put(FAST,x+cw-174,219,158,28);
+    put(OUTPUT,x+18,g.chatTop+16,cw-36,g.chatBottom-g.chatTop-32);
+    int center=g.chatTop+(g.chatBottom-g.chatTop)/2;
+    put(EMPTYTITLE,x+20,center-(g.chatBottom-g.chatTop<170?16:52),cw-40,32);put(EMPTYSUB,x+20,center-15,cw-40,22);
+    int sw=(cw-68)/3;put(SUGGEST1,x+24,center+23,sw,34);put(SUGGEST2,x+34+sw,center+23,sw,34);put(SUGGEST3,x+44+2*sw,center+23,sw,34);
+    bool hasImage=!chats.empty()&&!chats[selectedChat].draftImage.empty(),editing=!chats.empty()&&chats[selectedChat].editIndex>=0;
+    put(PREVIEW,x+18,g.composeTop+8,68,52);put(ATTACHINFO,x+(hasImage?96:18),g.composeTop+11,cw-(hasImage?228:150),46);
+    put(REMOVEIMAGE,x+cw-120,g.composeTop+6,102,26);put(CANCELEDIT,x+cw-120,g.composeTop+36,102,26);
+    ShowWindow(GetDlgItem(mainWnd,PREVIEW),hasImage?SW_SHOW:SW_HIDE);ShowWindow(GetDlgItem(mainWnd,ATTACHINFO),g.extra?SW_SHOW:SW_HIDE);
+    ShowWindow(GetDlgItem(mainWnd,REMOVEIMAGE),hasImage?SW_SHOW:SW_HIDE);ShowWindow(GetDlgItem(mainWnd,CANCELEDIT),editing?SW_SHOW:SW_HIDE);
+    int body=g.composeTop+g.extra;
+    put(PROMPTLABEL,x+18,body+13,cw-36,18);put(PROMPT,x+18,body+36,cw-36,54);
+    put(ATTACH,x+16,body+102,72,30);put(CLIP,x+94,body+102,72,30);put(REGION,x+172,body+102,82,30);put(SHOT,x+260,body+102,82,30);put(CLEAR,x+348,body+102,78,30);
+    put(STOP,x+cw-184,body+99,72,36);put(SEND,x+cw-104,body+99,88,36);
+    put(HINT,x,h-54,cw-210,18);put(BOTTOM,x+cw-198,h-62,198,30);put(STATUS,x,h-32,cw,28);
+    for(int id:{API,APILABEL,PASTE_KEY,FORGET_KEY,MODEL,MODELLABEL,MODELS,FAST,PROTECT,PIN})ShowWindow(GetDlgItem(mainWnd,id),settingsOpen?SW_SHOW:SW_HIDE);
+    updateEmptyUI();updateBottom();
+    RECT field;GetClientRect(outputEdit,&field);
+    if(!EqualRect(&field,&outputFormatRect)){SendMessageW(outputEdit,EM_SETRECTNP,0,(LPARAM)&field);outputFormatRect=field;}
+    GetClientRect(promptEdit,&field);
+    if(!EqualRect(&field,&promptFormatRect)){SendMessageW(promptEdit,EM_SETRECTNP,0,(LPARAM)&field);promptFormatRect=field;}
+    if(placed)layoutStamp.swap(stamp);
+    RedrawWindow(mainWnd,nullptr,nullptr,RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN);
+}
+void revealSettings(){settingsOpen=true;if(uiReady){layoutUI();SetFocus(apiEdit);}}
+void drawButton(const DRAWITEMSTRUCT& d){
+    bool primary=d.CtlID==SEND||d.CtlID==NEWCHAT,disabled=(d.itemState&ODS_DISABLED)!=0,pressed=(d.itemState&ODS_SELECTED)!=0;
+    bool hover=GetPropW(d.hwndItem,L"GeminiHover")!=nullptr;
+    bool sidebar=d.CtlID==NEWCHAT||d.CtlID==DELETECHAT||d.CtlID==FOLDER||d.CtlID==QUIT||d.CtlID==EXPORTCHAT||d.CtlID==IMPORTCHAT;
+    bool inside=d.CtlID==ATTACH||d.CtlID==REMOVEIMAGE||d.CtlID==CANCELEDIT||d.CtlID==PASTE_KEY||d.CtlID==FORGET_KEY||d.CtlID==MODELS||d.CtlID==SEND||d.CtlID==STOP||d.CtlID==CLIP||d.CtlID==REGION||d.CtlID==SHOT||d.CtlID==CLEAR||(d.CtlID>=SUGGEST1&&d.CtlID<=SUGGEST3);
+    FillRect(d.hDC,&d.rcItem,sidebar?sideBrush:inside?whiteBrush:pageBrush);
+    COLORREF bg=primary?ACCENT:RGB(236,242,253),fg=primary?PAPER:INK,border=primary?ACCENT:RGB(211,222,241);
+    if(d.CtlID==SETTINGS&&settingsOpen){bg=RGB(218,232,255);fg=ACCENT;}
+    if(d.CtlID==DELETECHAT||d.CtlID==FORGET_KEY)fg=RGB(173,62,77);
+    if(hover&&!disabled){bg=primary?RGB(39,88,203):RGB(223,234,253);border=bg;}
+    if(pressed&&!disabled){bg=primary?RGB(32,72,172):RGB(209,224,250);border=bg;}
+    if(disabled){bg=RGB(235,240,248);fg=RGB(126,139,160);border=bg;}
+    if(d.itemState&ODS_FOCUS)border=ACCENT;
+    RECT r=d.rcItem;InflateRect(&r,-1,-1);rounded(d.hDC,r,bg,border,28);
+    if(!disabled&&!pressed){RECT rim=r;InflateRect(&rim,-px(2),-px(2));rim.bottom=rim.top+px(2);rim.left+=px(12);rim.right-=px(12);if(rim.right>rim.left){HBRUSH light=CreateSolidBrush(primary?RGB(135,175,255):RGB(255,255,255));FillRect(d.hDC,&rim,light);DeleteObject(light);}}
+    HGDIOBJ old=SelectObject(d.hDC,uiFont);SetBkMode(d.hDC,TRANSPARENT);SetTextColor(d.hDC,fg);
+    InflateRect(&r,-px(5),0);wstring text=readText(d.hwndItem);DrawTextW(d.hDC,text.c_str(),(int)text.size(),&r,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);SelectObject(d.hDC,old);
+}
+void drawChatItem(const DRAWITEMSTRUCT& d){
+    FillRect(d.hDC,&d.rcItem,sideBrush);if(d.itemID==(UINT)-1||d.itemID>=visibleChats.size())return;
+    const Chat& c=chats[visibleChats[d.itemID]];bool selected=(d.itemState&ODS_SELECTED)!=0;
+    RECT r=d.rcItem;InflateRect(&r,-px(5),-px(3));if(selected)rounded(d.hDC,r,RGB(213,229,255),RGB(193,216,253),24);
+    RECT title=r;title.left+=px(12);title.right-=px(10);title.top+=px(5);title.bottom=title.top+px(21);
+    HGDIOBJ old=SelectObject(d.hDC,uiFont);SetBkMode(d.hDC,TRANSPARENT);SetTextColor(d.hDC,selected?ACCENT:INK);
+    wstring name=wide(c.title);DrawTextW(d.hDC,name.c_str(),(int)name.size(),&title,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);
+    RECT sub=title;sub.top=title.bottom+px(1);sub.bottom=sub.top+px(17);SelectObject(d.hDC,smallFont);SetTextColor(d.hDC,RGB(91,108,137));
+    wstring detail=(!c.draft.empty()||!c.draftImage.empty()||c.editIndex>=0)?L"Bản nháp đang lưu":c.turns.empty()?L"Sẵn sàng bắt đầu":std::to_wstring(c.turns.size())+L" lượt trò chuyện";
+    DrawTextW(d.hDC,detail.c_str(),(int)detail.size(),&sub,DT_SINGLELINE|DT_END_ELLIPSIS);SelectObject(d.hDC,old);
+    if((d.itemState&ODS_FOCUS)&&!(d.itemState&ODS_NOFOCUSRECT)){InflateRect(&r,-2,-2);DrawFocusRect(d.hDC,&r);}
+}
+void drawPreview(const DRAWITEMSTRUCT& d){
+    FillRect(d.hDC,&d.rcItem,whiteBrush);
+    rounded(d.hDC,d.rcItem,RGB(236,242,253),RGB(211,222,241),10);
+    if(previewPixels.bytes.empty())return;
+    RECT r=d.rcItem;InflateRect(&r,-px(3),-px(3));
+    double scale=std::min((double)(r.right-r.left)/previewPixels.w,(double)(r.bottom-r.top)/previewPixels.h);
+    int w=std::max(1,(int)(previewPixels.w*scale)),h=std::max(1,(int)(previewPixels.h*scale));
+    BITMAPINFO info{};info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER);info.bmiHeader.biWidth=(LONG)previewPixels.w;info.bmiHeader.biHeight=-(LONG)previewPixels.h;info.bmiHeader.biPlanes=1;info.bmiHeader.biBitCount=32;info.bmiHeader.biCompression=BI_RGB;
+    int old=SetStretchBltMode(d.hDC,HALFTONE);SetBrushOrgEx(d.hDC,0,0,nullptr);
+    StretchDIBits(d.hDC,r.left+(r.right-r.left-w)/2,r.top+(r.bottom-r.top-h)/2,w,h,0,0,(int)previewPixels.w,(int)previewPixels.h,previewPixels.bytes.data(),&info,DIB_RGB_COLORS,SRCCOPY);
+    if(old)SetStretchBltMode(d.hDC,old);
+}
+
+void createUI(){
+    auto label=[&](int id,const wchar_t* text){return control(L"STATIC",text,SS_LEFT,id);};
+    auto button=[&](int id,const wchar_t* text){return control(L"BUTTON",text,WS_TABSTOP|BS_OWNERDRAW,id);};
+    label(BRAND,L"Gemini Desk");label(SUBTITLE,L"Không gian của bạn");button(NEWCHAT,L"+  Cuộc trò chuyện");label(SIDETITLE,L"CUỘC TRÒ CHUYỆN");
+    HWND search=control(L"EDIT",L"",WS_TABSTOP|ES_AUTOHSCROLL,SEARCH);SendMessageW(search,0x1501,TRUE,(LPARAM)L"Tìm cuộc trò chuyện...");
+    chatCombo=control(L"LISTBOX",L"",WS_TABSTOP|WS_VSCROLL|LBS_NOTIFY|LBS_NOINTEGRALHEIGHT|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS,CHATS);SendMessageW(chatCombo,LB_SETITEMHEIGHT,0,px(58));
+    label(CHATINFO,L"");button(EXPORTCHAT,L"Sao lưu");button(IMPORTCHAT,L"Khôi phục");button(BOTTOM,L"Xuống cuối  ↓");button(DELETECHAT,L"Xóa chat");button(FOLDER,L"Dữ liệu");button(QUIT,L"Thoát ứng dụng");
+    control(L"STATIC",L"Cuộc trò chuyện mới",SS_LEFT|SS_ENDELLIPSIS|SS_NOPREFIX,REPLYLABEL);label(MODELBADGE,L"Gemini Desk 14  ·  Sẵn sàng cùng bạn");button(COPY,L"Sao chép");button(SETTINGS,L"Cài đặt");
+    label(APILABEL,L"API key");apiEdit=control(L"EDIT",L"",WS_TABSTOP|ES_PASSWORD|ES_AUTOHSCROLL,API);SendMessageW(apiEdit,EM_SETLIMITTEXT,4096,0);button(PASTE_KEY,L"Dán + lưu");button(FORGET_KEY,L"Quên key");
+    label(MODELLABEL,L"Model");modelCombo=control(L"COMBOBOX",L"",WS_TABSTOP|CBS_DROPDOWN|CBS_AUTOHSCROLL|WS_VSCROLL,MODEL);
+    SendMessageW(modelCombo,CB_LIMITTEXT,200,0);SendMessageW(modelCombo,CB_ADDSTRING,0,(LPARAM)L"AUTO");SetWindowTextW(modelCombo,wide(preferredModel).c_str());button(MODELS,L"Tải model");
+    fastCheck=control(L"BUTTON",L"Chế độ nhanh",WS_TABSTOP|BS_AUTOCHECKBOX,FAST);SendMessageW(fastCheck,BM_SETCHECK,fastMode?BST_CHECKED:BST_UNCHECKED,0);
+    protectCheck=control(L"BUTTON",L"Loại trừ khỏi ảnh chụp",WS_TABSTOP|BS_AUTOCHECKBOX,PROTECT);SendMessageW(protectCheck,BM_SETCHECK,BST_CHECKED,0);control(L"BUTTON",L"Ghim cửa sổ",WS_TABSTOP|BS_AUTOCHECKBOX,PIN);
+    outputEdit=control(MSFTEDIT_CLASS,L"",WS_TABSTOP|WS_VSCROLL|ES_MULTILINE|ES_AUTOVSCROLL|ES_READONLY,OUTPUT);
+    outputBase=(WNDPROC)SetWindowLongPtrW(outputEdit,GWLP_WNDPROC,(LONG_PTR)outputProc);
+    SendMessageW(outputEdit,EM_EXLIMITTEXT,0,32*1024*1024);SendMessageW(outputEdit,EM_SETBKGNDCOLOR,FALSE,PAPER);
+    SendMessageW(outputEdit,EM_SETEVENTMASK,0,ENM_LINK|ENM_SCROLL);SendMessageW(outputEdit,EM_AUTOURLDETECT,FALSE,0);SendMessageW(outputEdit,EM_SETUNDOLIMIT,0,0);
+    control(L"STATIC",L"Bạn muốn bắt đầu từ đâu?",SS_CENTER,EMPTYTITLE);control(L"STATIC",L"Nhập câu hỏi hoặc đính kèm ảnh, rồi bấm Gửi.",SS_CENTER,EMPTYSUB);
+    button(SUGGEST1,L"Giải thích dễ hiểu");button(SUGGEST2,L"Tóm tắt văn bản");button(SUGGEST3,L"Viết & chỉnh sửa");
+    label(PROMPTLABEL,L"Nhắn tin cho Gemini...");promptEdit=control(L"EDIT",L"",WS_TABSTOP|WS_VSCROLL|ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN,PROMPT);SendMessageW(promptEdit,EM_SETLIMITTEXT,100000,0);
+    promptBase=(WNDPROC)SetWindowLongPtrW(promptEdit,GWLP_WNDPROC,(LONG_PTR)composerProc);DragAcceptFiles(promptEdit,TRUE);DragAcceptFiles(mainWnd,TRUE);
+    button(SEND,L"Gửi  ↑");button(STOP,L"Dừng");button(ATTACH,L"+  Ảnh");button(CLIP,L"Dán");button(REGION,L"Chụp vùng");button(SHOT,L"Chụp màn");button(CLEAR,L"Xóa nháp");
+    control(L"STATIC",L"",SS_OWNERDRAW,PREVIEW);label(ATTACHINFO,L"");button(REMOVEIMAGE,L"Bỏ ảnh");button(CANCELEDIT,L"Hủy sửa");
+    SendMessageW(GetDlgItem(mainWnd,ATTACHINFO),WM_SETFONT,(WPARAM)smallFont,TRUE);
+    label(HINT,L"Ctrl+Enter: gửi  ·  Ctrl+V: dán");statusLabel=label(STATUS,L"Sẵn sàng. Lịch sử và bản nháp được tự động lưu.");
+    for(int id:{BRAND,REPLYLABEL,EMPTYTITLE})SendMessageW(GetDlgItem(mainWnd,id),WM_SETFONT,(WPARAM)titleFont,TRUE);
+    for(int id:{SUBTITLE,SIDETITLE,CHATINFO,HINT,STATUS,PROMPTLABEL,MODELBADGE,EMPTYSUB})SendMessageW(GetDlgItem(mainWnd,id),WM_SETFONT,(WPARAM)smallFont,TRUE);
+    string key=loadKey();settingsOpen=key.empty();SetWindowTextW(apiEdit,wide(key).c_str());if(!key.empty())SecureZeroMemory(&key[0],key.size());
+    refreshChats();showHistory();setBusy(false);uiReady=true;layoutUI();
+}
+void command(int id){
+    if(id==QUIT){requestExit();return;}
+    if(id==STOP&&archiveBusy){cancelArchive();status(L"Đang hủy sao lưu/khôi phục…");return;}
+    if(id==BOTTOM){selectOutputEnd();SendMessageW(outputEdit,EM_SCROLLCARET,0,0);unreadUpdates=0;updateBottom();return;}
+    if(archiveBusy&&id!=COPY)return;
+    if(id==STOP&&busy){SetEvent(job->cancel);status(L"Đang dừng; chờ thao tác mạng hiện tại hoàn tất hoặc hết timeout.");return;}
+    if(closePending)return;
+    if(id==SETTINGS){settingsOpen=!settingsOpen;if(!settingsOpen)SetFocus(promptEdit);layoutUI();return;}
+    if(id>=SUGGEST1&&id<=SUGGEST3&&!busy){
+        const wchar_t* prompts[]={L"Hãy giải thích dễ hiểu về: ",L"Hãy tóm tắt các ý chính của văn bản sau:\r\n",L"Hãy giúp tôi chỉnh sửa đoạn văn sau cho rõ ràng, tự nhiên:\r\n"};
+        SetWindowTextW(promptEdit,prompts[id-SUGGEST1]);SetFocus(promptEdit);SendMessageW(promptEdit,EM_SETSEL,(WPARAM)-1,(LPARAM)-1);return;
+    }
+    if(id==COPY){
+        wstring note,live;unsigned revision=0;
+        bool active=busy&&job&&!job->list&&job->chatId==chats[selectedChat].id;
+        if(active)job->snapshot(note,live,revision);
+        copyText(windowsLines(transcript(true,active?&live:nullptr)));
+        status(active?L"Đã sao chép hội thoại cùng phần trả lời đã nhận.":L"Đã sao chép toàn bộ hội thoại đang chọn.");return;
+    }
+    if(id==PROTECT){affinity();return;}
+    if(id==PIN){bool on=SendMessageW(GetDlgItem(mainWnd,PIN),BM_GETCHECK,0,0)==BST_CHECKED;SetWindowPos(mainWnd,on?HWND_TOPMOST:HWND_NOTOPMOST,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOACTIVATE);return;}
+    if(id==FOLDER){if((INT_PTR)ShellExecuteW(mainWnd,L"open",appDir.c_str(),nullptr,nullptr,SW_SHOW)<=32)throw std::runtime_error("Không mở được thư mục dữ liệu.");return;}
+    if(busy)return;
+    switch(id){
+        case EXPORTCHAT:startArchive(false);break;
+        case IMPORTCHAT:startArchive(true);break;
+        case ATTACH:chooseImage();break;
+        case REMOVEIMAGE:chats[selectedChat].draftImage.clear();refreshAttachment();saveQuiet();break;
+        case CANCELEDIT:chats[selectedChat].editIndex=-1;refreshAttachment();saveQuiet();status(L"Đã hủy chế độ sửa; nội dung đang nhập được giữ lại.");break;
+        case SEND:start();break;
+        case CLIP:askClipboard();break;
+        case SHOT:fullShot();break;
+        case REGION:secondPoint=false;status(L"Di chuột tới góc 1 và nhấn Alt+S, rồi tới góc 2 và nhấn Alt+S.");break;
+        case MODELS:start(true);break;
+        case CLEAR:secondPoint=false;SetWindowTextW(promptEdit,L"");chats[selectedChat].draftImage.clear();chats[selectedChat].editIndex=-1;refreshAttachment();saveQuiet();break;
+        case NEWCHAT:secondPoint=false;newChat();SetWindowTextW(GetDlgItem(mainWnd,SEARCH),L"");refreshChats();showHistory();saveQuiet();SetFocus(promptEdit);break;
+        case DELETECHAT:
+            if(MessageBoxW(mainWnd,L"Xóa hội thoại đang chọn khỏi lịch sử hiện tại?",L"Xóa chat",MB_YESNO|MB_ICONQUESTION)==IDYES){
+                auto previous=chats;size_t selected=selectedChat;
+                chats.erase(chats.begin()+selectedChat);selectedChat=0;if(chats.empty())newChat();
+                try{saveHistory();historyWarning.clear();}
+                catch(...){chats.swap(previous);selectedChat=selected;throw;}
+                secondPoint=false;SetWindowTextW(GetDlgItem(mainWnd,SEARCH),L"");refreshChats();showHistory();SetFocus(promptEdit);
+            }break;
+        case FAST:fastMode=SendMessageW(fastCheck,BM_GETCHECK,0,0)==BST_CHECKED;saveQuiet();break;
+        case PASTE_KEY:{
+            string key=trim(utf8(clipboardText()));if(!validIdentifier(key))throw std::runtime_error("Clipboard không chứa key hợp lệ.");
+            SetWindowTextW(apiEdit,wide(key).c_str());saveKey(key);SecureZeroMemory(&key[0],key.size());status(L"Đã lưu key trong Windows Credential Manager.");break;
+        }
+        case FORGET_KEY:
+            if(!CredDeleteW(CREDENTIAL_TARGET,CRED_TYPE_GENERIC,0)&&GetLastError()!=ERROR_NOT_FOUND)throw winError("Không xóa được key");
+            SetWindowTextW(apiEdit,L"");cacheKey.clear();cachedModels.clear();lastGoodModel.clear();break;
+    }
+}
+LRESULT CALLBACK windowProc(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
+    try{
+        if(taskbarCreated && msg==taskbarCreated){trayAdded=false;if(!addTray())showWindow();return 0;}
+        switch(msg){
+            case WM_CREATE:mainWnd=hwnd;createUI();return 0;
+            case WM_ENTERSIZEMOVE:interactiveResize=true;return 0;
+            case WM_EXITSIZEMOVE:interactiveResize=false;return 0;
+            case WM_SIZE:if(uiReady&&wp!=SIZE_MINIMIZED)layoutUI();return 0;
+            case WM_GETMINMAXINFO:{auto m=(MINMAXINFO*)lp;RECT r{0,0,px(960),px(660)};AdjustWindowRectEx(&r,WS_OVERLAPPEDWINDOW,FALSE,0);m->ptMinTrackSize.x=r.right-r.left;m->ptMinTrackSize.y=r.bottom-r.top;return 0;}
+            case WM_ERASEBKGND:return 1; // The buffered WM_PAINT covers the background once.
+            case WM_PAINT:{PAINTSTRUCT ps;HDC dc=BeginPaint(hwnd,&ps);paintBuffered(dc,ps.rcPaint);EndPaint(hwnd,&ps);return 0;}
+            case WM_MEASUREITEM:if(((MEASUREITEMSTRUCT*)lp)->CtlID==CHATS){((MEASUREITEMSTRUCT*)lp)->itemHeight=px(58);return TRUE;}break;
+            case WM_CTLCOLORSTATIC:case WM_CTLCOLOREDIT:case WM_CTLCOLORLISTBOX:{
+                HDC dc=(HDC)wp;int id=GetDlgCtrlID((HWND)lp);COLORREF bg=PAGE,fg=INK;HBRUSH brush=pageBrush;
+                if(id==BRAND||id==SUBTITLE||id==SIDETITLE||id==CHATINFO||id==CHATS){bg=SIDE;brush=sideBrush;}
+                else if(msg==WM_CTLCOLOREDIT||id==OUTPUT||id==PROMPT||id==SEARCH||id==APILABEL||id==MODELLABEL||id==EMPTYTITLE||id==EMPTYSUB||id==PROMPTLABEL||id==ATTACHINFO){bg=PAPER;brush=whiteBrush;}
+                if(id==API){bg=PAGE;brush=pageBrush;}
+                if(id==SUBTITLE||id==SIDETITLE||id==CHATINFO||id==HINT||id==STATUS||id==MODELBADGE||id==EMPTYSUB||id==PROMPTLABEL)fg=RGB(91,108,137);
+                if(!IsWindowEnabled((HWND)lp))fg=RGB(120,132,154);
+                SetTextColor(dc,fg);SetBkColor(dc,bg);return (LRESULT)brush;
+            }
+            case WM_DRAWITEM:{auto d=(DRAWITEMSTRUCT*)lp;if(d->CtlID==PREVIEW){drawPreview(*d);return TRUE;}if(d->CtlType==ODT_BUTTON){drawButton(*d);return TRUE;}if(d->CtlType==ODT_LISTBOX&&d->CtlID==CHATS){drawChatItem(*d);return TRUE;}break;}
+            case WM_APP+31:bottomPosted=false;updateBottom();return 0;
+            case WM_APP+20:return (LRESULT)buildToken();
+            case WM_SHOW_APP:showWindow();return 0;
+            case WM_TRAY:{
+                UINT event=LOWORD(lp);
+                if(event==WM_LBUTTONDBLCLK||event==NIN_SELECT||event==NIN_KEYSELECT)showWindow();
+                if(event==WM_CONTEXTMENU||event==WM_RBUTTONUP){
+                    HMENU menu=CreatePopupMenu();AppendMenuW(menu,MF_STRING,1,L"Mở Gemini");AppendMenuW(menu,MF_STRING,2,L"Thoát hẳn");
+                    POINT p;GetCursorPos(&p);SetForegroundWindow(hwnd);
+                    int choice=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_RIGHTBUTTON,p.x,p.y,0,hwnd,nullptr);DestroyMenu(menu);PostMessageW(hwnd,WM_NULL,0,0);
+                    if(choice==1)showWindow();else if(choice==2)requestExit();
+                }return 0;
+            }
+            case WM_DROPFILES:dropImage((HDROP)wp);return 0;
+            case WM_NOTIFY:{
+                NMHDR* header=(NMHDR*)lp;
+                if(header->idFrom==OUTPUT&&header->code==EN_LINK){
+                    ENLINK* link=(ENLINK*)lp;
+                    if(link->msg==WM_LBUTTONUP){
+                        for(const auto& action:textActions)if(link->chrg.cpMin<action.last&&link->chrg.cpMax>action.first){
+                            TextAction selected=action;
+                            if(selected.kind==0){copyText(windowsLines(selected.code));status(L"Đã sao chép riêng khối code.");}
+                            else if(selected.kind==1)beginEdit(selected.turn);
+                            else if(selected.kind==3)start(false,(int)selected.turn);
+                            else if(selected.kind==4||selected.kind==5)changeReply(selected.turn,selected.kind==4?-1:1);
+                            else if(selected.turn<chats[selectedChat].turns.size()){
+                                wstring path=imagePath(chats[selectedChat].turns[selected.turn].image);
+                                if((INT_PTR)ShellExecuteW(hwnd,L"open",path.c_str(),nullptr,nullptr,SW_SHOW)<=32)throw std::runtime_error("Không mở được ảnh đã lưu.");
+                            }
+                            return 1;
+                        }
+                    }
+                }break;
+            }
+            case WM_COMMAND:{
+                int id=LOWORD(wp),event=HIWORD(wp);
+                if(id==OUTPUT&&event==EN_VSCROLL){queueBottom();return 0;}
+                if(archiveBusy){if(event==BN_CLICKED)command(id);return 0;}
+                if(id==PROMPT&&(event==EN_SETFOCUS||event==EN_KILLFOCUS)){surfaceCache.dirty=true;auto g=geometry();RECT r=rectPx(g.x,g.composeTop,g.cw,150+g.extra);InvalidateRect(hwnd,&r,FALSE);return 0;}
+                if(id==PROMPT&&event==EN_CHANGE&&uiReady&&!syncingPrompt&&!busy){auto& c=chats[selectedChat];bool wasDraft=!c.draft.empty()||!c.draftImage.empty()||c.editIndex>=0;c.draft=utf8(readText(promptEdit));bool hasDraft=!c.draft.empty()||!c.draftImage.empty()||c.editIndex>=0;if(wasDraft!=hasDraft)invalidateChatRow();SetTimer(hwnd,2,800,nullptr);}
+                else if(id==SEARCH&&event==EN_CHANGE&&uiReady){if(!SetTimer(hwnd,3,150,nullptr))refreshChats();}
+                else if(id==MODEL&&(event==CBN_EDITCHANGE||event==CBN_SELCHANGE)&&uiReady&&!busy){
+                    if(event==CBN_SELCHANGE){int i=(int)SendMessageW(modelCombo,CB_GETCURSEL,0,0);int n=(int)SendMessageW(modelCombo,CB_GETLBTEXTLEN,i,0);if(i>=0&&n>=0){wstring v(n+1,L'\0');SendMessageW(modelCombo,CB_GETLBTEXT,i,(LPARAM)&v[0]);v.resize(n);preferredModel=utf8(v);}}
+                    else preferredModel=trim(utf8(readText(modelCombo)));
+                    SetTimer(hwnd,2,800,nullptr);
+                }
+                else if(id==CHATS&&event==LBN_SELCHANGE&&!busy){
+                    LRESULT index=SendMessageW(chatCombo,LB_GETCURSEL,0,0);
+                    if(index>=0&&(size_t)index<visibleChats.size()){selectedChat=visibleChats[(size_t)index];secondPoint=false;showHistory();saveQuiet();}
+                }else if(event==BN_CLICKED)command(id);
+                return 0;
+            }
+            case WM_HOTKEY:
+                if(wp==HK_QUIT){requestExit();return 0;}if(closePending)return 0;
+                if(wp==HK_HIDE){if(IsWindowVisible(hwnd))hideToTray();else showWindow();}
+                else if(!busy&&!archiveBusy){if(wp==HK_CLIP)askClipboard();else if(wp==HK_FULL)fullShot();else if(wp==HK_REGION)regionShot();}
+                return 0;
+            case WM_TIMER:
+                if(wp==5){if(archiveThread&&WaitForSingleObject(archiveThread,0)==WAIT_OBJECT_0)finishArchive();return 0;}
+                if(wp==2){if(interactiveResize)return 0;KillTimer(hwnd,2);saveQuiet();return 0;}
+                if(wp==3){KillTimer(hwnd,3);refreshChats();return 0;}
+                if(wp==1 && worker){
+                    if(interactiveResize&&!closePending)return 0;
+                    if(WaitForSingleObject(worker,0)==WAIT_OBJECT_0)finishJob();
+                    else if(!closePending&&IsWindowVisible(hwnd)&&!IsIconic(hwnd)){
+                        wstring note,delta;bool reset=false;
+                        if(job->drain(note,delta,reset)){
+                            status(note);
+                            if(!job->list)displayLive(std::move(delta),reset);
+                        }
+                    }
+                }return 0;
+            case WM_CLOSE:hideToTray();return 0;
+            case WM_QUERYENDSESSION:
+                if(archiveBusy)cancelArchive();
+                if(busy){SetEvent(job->cancel);wstring note,text;unsigned revision=0;job->snapshot(note,text,revision);
+                    if(!job->list)for(auto& c:chats)if(c.id==job->chatId&&job->turnIndex<c.turns.size()){c.turns[job->turnIndex].answer=utf8(text);c.turns[job->turnIndex].state="interrupted";if(!c.turns[job->turnIndex].replies.empty())rememberReply(c.turns[job->turnIndex]);}}
+                saveQuiet();return TRUE;
+            case WM_DESTROY:
+                uiReady=false;surfaceCache.clear();KillTimer(hwnd,1);KillTimer(hwnd,2);KillTimer(hwnd,3);KillTimer(hwnd,5);
+                if(trayAdded)Shell_NotifyIconW(NIM_DELETE,&tray);
+                for(int id:{HK_HIDE,HK_CLIP,HK_QUIT,HK_REGION,HK_FULL})UnregisterHotKey(hwnd,id);
+                PostQuitMessage(0);return 0;
+        }
+    }catch(const std::exception& e){
+        if(msg==WM_CREATE){MessageBoxW(hwnd,wide(e.what()).c_str(),L"Lỗi khởi tạo",MB_ICONERROR);return -1;}
+        status(L"[Lỗi] "+wide(e.what()));
+    }
+    return DefWindowProcW(hwnd,msg,wp,lp);
+}
+
+void initDataDirectory(){
+    wchar_t path[32768]{};DWORD n=GetEnvironmentVariableW(L"LOCALAPPDATA",path,32768);
+    if(!n||n>=32768)throw std::runtime_error("Không tìm thấy LOCALAPPDATA.");
+    appDir=wstring(path)+L"\\GeminiDesktop";
+    if(!CreateDirectoryW(appDir.c_str(),nullptr)&&GetLastError()!=ERROR_ALREADY_EXISTS)throw winError("Không tạo được thư mục GeminiDesktop");
+}
+void copyRuntimeLibraries(){
+    for(const wchar_t* name:{L"libstdc++-6.dll",L"libgcc_s_seh-1.dll",L"libgcc_s_dw2-1.dll",L"libgcc_s_sjlj-1.dll",L"libwinpthread-1.dll"}){
+        HMODULE m=GetModuleHandleW(name);if(!m)continue;wchar_t path[32768]{};
+        DWORD n=GetModuleFileNameW(m,path,32768);if(!n||n>=32768)throw winError("Không đọc được đường dẫn thư viện MinGW");
+        wstring target=appDir+L"\\"+name;
+        if(_wcsicmp(path,target.c_str())!=0&&!CopyFileW(path,target.c_str(),FALSE))throw winError("Không sao chép được thư viện MinGW cho bản chạy nền");
+    }
+}
+unsigned buildToken(){
+    unsigned value=2166136261u;
+    const char* stamp="GeminiDesk14 " __DATE__ " " __TIME__;
+    for(const unsigned char* p=(const unsigned char*)stamp;*p;++p)value=(value^*p)*16777619u;
+    return (value&0x7fffffffu)|1u;
+}
+bool reuseRunningApp(HWND existing){
+    if(!existing)return false;
+    DWORD_PTR version=0;
+    if(!SendMessageTimeoutW(existing,WM_APP+20,0,0,SMTO_ABORTIFHUNG|SMTO_BLOCK,2000,&version))
+        throw std::runtime_error("Ứng dụng cũ chưa phản hồi. Hãy mở bản cũ và thoát bằng Alt+Q rồi chạy lại.");
+    if(version==buildToken()){
+        if(!PostMessageW(existing,WM_SHOW_APP,0,0))throw winError("Không mở lại được cửa sổ");
+        return true;
+    }
+    HWND prompt=GetDlgItem(existing,PROMPT);DWORD_PTR draftLength=0;
+    if(prompt){
+        if(!SendMessageTimeoutW(prompt,WM_GETTEXTLENGTH,0,0,SMTO_ABORTIFHUNG|SMTO_BLOCK,2000,&draftLength))
+            throw std::runtime_error("Chưa đọc được trạng thái bản nháp của ứng dụng cũ. Hãy thoát bản cũ bằng Alt+Q.");
+        if(draftLength){
+            PostMessageW(existing,WM_SHOW_APP,0,0);
+            throw std::runtime_error("Bản giao diện cũ còn nội dung chưa gửi. Hãy sao chép nội dung cần giữ, thoát bản cũ bằng Alt+Q rồi F9 lại để mở giao diện mới.");
+        }
+    }
+    DWORD pid=0;GetWindowThreadProcessId(existing,&pid);
+    FileHandle oldProcess(OpenProcess(SYNCHRONIZE,FALSE,pid));
+    if(!oldProcess.h)throw winError("Không theo dõi được phiên bản cũ");
+    if(!PostMessageW(existing,WM_COMMAND,QUIT,0))throw winError("Không yêu cầu thoát được phiên bản cũ");
+    DWORD result=WaitForSingleObject(oldProcess.h,8000);
+    if(result==WAIT_OBJECT_0)return false;
+    if(result==WAIT_FAILED)throw winError("Không xác nhận được phiên bản cũ đã thoát");
+    PostMessageW(existing,WM_SHOW_APP,0,0);
+    throw std::runtime_error("Đã yêu cầu bản cũ lưu dữ liệu và thoát. Nếu bản cũ đang gửi yêu cầu hoặc có hộp thoại lưu, hãy chờ hoàn tất rồi F9 lại.");
+}
+
+int launchDetached(){
+    FileHandle gate(CreateMutexW(nullptr,FALSE,L"Local\\GeminiDesktopV4Launcher"));
+    if(!gate.h)throw winError("Không tạo được launcher mutex");
+    DWORD waited=WaitForSingleObject(gate.h,10000);
+    if(waited!=WAIT_OBJECT_0&&waited!=WAIT_ABANDONED)throw std::runtime_error("Một bản Gemini khác đang khởi động.");
+    struct Unlock{HANDLE h;~Unlock(){ReleaseMutex(h);}} unlock{gate.h};
+    HWND existing=FindWindowW(CLASS_NAME,nullptr);
+    if(reuseRunningApp(existing))return 0;
+    wchar_t source[32768]{};DWORD n=GetModuleFileNameW(nullptr,source,32768);
+    if(!n||n>=32768)throw winError("Không đọc được đường dẫn chương trình");
+    wstring target=appDir+L"\\GeminiDesktop.exe",temp=appDir+L"\\GeminiDesktop.new.exe";
+    if(_wcsicmp(source,target.c_str())!=0){
+        if(!CopyFileW(source,temp.c_str(),FALSE)||!MoveFileExW(temp.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))
+            throw winError("Không cập nhật được bản chạy nền. Hãy Thoát hẳn bản cũ rồi F9 lại");
+    }
+    copyRuntimeLibraries();
+    FileHandle ready(CreateEventW(nullptr,TRUE,FALSE,L"Local\\GeminiDesktopV4Ready"));
+    if(!ready.h)throw winError("Không tạo được ready event");
+    ResetEvent(ready.h);
+    wstring command=L"\""+target+L"\" --background";
+    std::vector<wchar_t> buffer(command.begin(),command.end());buffer.push_back(0);
+    STARTUPINFOW si{};si.cb=sizeof(si);PROCESS_INFORMATION pi{};
+    DWORD flags=DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP|CREATE_BREAKAWAY_FROM_JOB;
+    BOOL ok=CreateProcessW(target.c_str(),buffer.data(),nullptr,nullptr,FALSE,flags,nullptr,appDir.c_str(),&si,&pi);
+    if(!ok&&GetLastError()==ERROR_ACCESS_DENIED){
+        buffer.assign(command.begin(),command.end());buffer.push_back(0);
+        ok=CreateProcessW(target.c_str(),buffer.data(),nullptr,nullptr,FALSE,DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP,nullptr,appDir.c_str(),&si,&pi);
+    }
+    if(!ok)throw winError("Không khởi động được tiến trình độc lập");
+    CloseHandle(pi.hThread);FileHandle process(pi.hProcess);HANDLE waits[]={ready.h,process.h};
+    DWORD result=WaitForMultipleObjects(2,waits,FALSE,10000);
+    if(result==WAIT_FAILED)throw winError("Không theo dõi được tiến trình chạy nền");
+    if(result==WAIT_TIMEOUT)throw std::runtime_error("Chưa xác nhận được giao diện sau 10 giây. Kiểm tra ứng dụng ở khay hệ thống trước khi chạy lại.");
+    if(result==WAIT_OBJECT_0+1)throw std::runtime_error("Ứng dụng chạy nền đã thoát khi khởi tạo.");
+    return 0;
+}
+int main(int argc,char** argv){
+    try{
+        initLibraries();initDataDirectory();
+        bool background=argc>1&&string(argv[1])=="--background";
+        if(!background)return launchDetached();
+        HANDLE unique=CreateMutexW(nullptr,TRUE,L"Local\\GeminiDesktopV4Running");
+        if(!unique)throw winError("Không tạo được single-instance mutex");
+        FileHandle instanceMutex(unique);
+        if(GetLastError()==ERROR_ALREADY_EXISTS){HWND old=FindWindowW(CLASS_NAME,nullptr);if(old)PostMessageW(old,WM_SHOW_APP,0,0);return 0;}
+        ComScope com;SetProcessDPIAware();FreeConsole();loadHistory();
+        HDC screen=GetDC(nullptr);if(screen){uiDpi=GetDeviceCaps(screen,LOGPIXELSX);ReleaseDC(nullptr,screen);}if(uiDpi<96)uiDpi=96;
+        RECT desktop{0,0,GetSystemMetrics(SM_CXSCREEN),GetSystemMetrics(SM_CYSCREEN)};
+        SystemParametersInfoW(SPI_GETWORKAREA,0,&desktop,0);
+        uiDpi=std::max(96,std::min(uiDpi,std::min((int)(desktop.right-desktop.left)*96/1000,(int)(desktop.bottom-desktop.top)*96/710)));
+        uiFont=CreateFontW(-px(15),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH|FF_DONTCARE,L"Segoe UI");
+        titleFont=CreateFontW(-px(20),0,0,0,FW_SEMIBOLD,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
+        smallFont=CreateFontW(-px(12),0,0,0,FW_NORMAL,FALSE,FALSE,FALSE,DEFAULT_CHARSET,OUT_DEFAULT_PRECIS,CLIP_DEFAULT_PRECIS,CLEARTYPE_QUALITY,DEFAULT_PITCH,L"Segoe UI");
+        pageBrush=CreateSolidBrush(PAGE);sideBrush=CreateSolidBrush(SIDE);whiteBrush=CreateSolidBrush(PAPER);
+        if(!pageBrush||!sideBrush||!whiteBrush||!uiFont||!titleFont||!smallFont)throw winError("Không tạo được giao diện");
+        HINSTANCE instance=GetModuleHandleW(nullptr);
+        WNDCLASSW wc{};wc.lpfnWndProc=windowProc;wc.hInstance=instance;wc.lpszClassName=CLASS_NAME;
+        wc.hCursor=LoadCursorW(nullptr,IDC_ARROW);wc.hIcon=LoadIconW(nullptr,IDI_APPLICATION);wc.hbrBackground=pageBrush;
+        if(!RegisterClassW(&wc))throw winError("Không đăng ký được cửa sổ");
+        DWORD style=WS_OVERLAPPEDWINDOW|WS_CLIPCHILDREN;RECT r{0,0,px(1120),px(780)};AdjustWindowRectEx(&r,style,FALSE,0);
+        int initialW=std::min((int)(r.right-r.left),(int)(desktop.right-desktop.left));
+        int initialH=std::min((int)(r.bottom-r.top),(int)(desktop.bottom-desktop.top));
+        mainWnd=CreateWindowExW(0,CLASS_NAME,L"Gemini Desk 14 — X: xuống khay | Alt+Q: thoát hẳn",style,
+            desktop.left+(desktop.right-desktop.left-initialW)/2,desktop.top+(desktop.bottom-desktop.top-initialH)/2,initialW,initialH,nullptr,nullptr,instance,nullptr);
+        if(!mainWnd)throw winError("Không tạo được cửa sổ chính");
+        taskbarCreated=RegisterWindowMessageW(L"TaskbarCreated");addTray();ShowWindow(mainWnd,SW_SHOW);UpdateWindow(mainWnd);affinity();
+        struct Hotkey{int id;UINT key;};wstring warnings;
+        for(const auto& h:std::vector<Hotkey>{{HK_HIDE,'Z'},{HK_CLIP,'X'},{HK_QUIT,'Q'},{HK_REGION,'S'},{HK_FULL,'A'}})
+            if(!RegisterHotKey(mainWnd,h.id,MOD_ALT|MOD_NOREPEAT,h.key))warnings+=L"Alt+"+wstring(1,(wchar_t)h.key)+L" ";
+        if(!warnings.empty())status(L"Phím tắt bị ứng dụng khác chiếm: "+warnings);
+        if(!historyWarning.empty())status(historyWarning);
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        if(QueryInformationJobObject(nullptr,JobObjectExtendedLimitInformation,&limits,sizeof(limits),nullptr)&&
+           (limits.BasicLimitInformation.LimitFlags&JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE))
+            status(L"IDE đang áp chính sách kết thúc tiến trình con; chạy bản trong Thư mục để độc lập hoàn toàn.");
+        FileHandle ready(OpenEventW(EVENT_MODIFY_STATE,FALSE,L"Local\\GeminiDesktopV4Ready"));if(ready.h)SetEvent(ready.h);
+        SetFocus(settingsOpen&&readText(apiEdit).empty()?apiEdit:promptEdit);MSG msg{};BOOL result;
+        while((result=GetMessageW(&msg,nullptr,0,0))>0){
+            if(msg.message==WM_KEYDOWN&&msg.wParam==VK_RETURN&&(GetKeyState(VK_CONTROL)&0x8000)&&GetFocus()==promptEdit){SendMessageW(mainWnd,WM_COMMAND,SEND,0);continue;}
+            if(msg.message==WM_KEYDOWN&&msg.wParam==VK_ESCAPE&&secondPoint){secondPoint=false;status(L"Đã hủy chọn vùng chụp.");continue;}
+            if(!IsDialogMessageW(mainWnd,&msg)){TranslateMessage(&msg);DispatchMessageW(&msg);}
+        }
+        client.reset();for(HGDIOBJ o:{(HGDIOBJ)uiFont,(HGDIOBJ)titleFont,(HGDIOBJ)smallFont,(HGDIOBJ)pageBrush,(HGDIOBJ)sideBrush,(HGDIOBJ)whiteBrush})if(o)DeleteObject(o);return result<0?1:(int)msg.wParam;
+    }catch(const std::exception& e){MessageBoxW(nullptr,wide(e.what()).c_str(),L"Gemini Desktop",MB_ICONERROR);return 1;}
+}
